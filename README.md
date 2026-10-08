@@ -9,6 +9,22 @@ profiles across the propagation axis, and reports beam width, waist position,
 and Gaussian-beam propagation parameters with explicit numerical-quality
 diagnostics.
 
+![Preprocessing](docs/images/01_preprocessing.png)
+
+*Raw input → axis-aligned → background-subtracted.*
+
+![Abel reconstruction](docs/images/02_abel.png)
+
+*Independent inverse Abel reconstructions: BASEX and Hansen-Law.*
+
+![Beam width](docs/images/03_beam_parameters.png)
+
+*Beam radius w(z) from Gaussian fits across the propagation axis.*
+
+![3D cross-section](docs/images/04_3d_cross_section.png)
+
+*Reconstructed 3D intensity cross-section at the central z-slice.*
+
 ---
 
 ## What it does
@@ -171,6 +187,14 @@ notebooks/             # original research notebook (development history)
 ```bash
 pytest tests/ -v
 ```
+
+## Regenerating the images above
+
+The four figures at the top of this README are produced from a synthetic beam, not from experimental data. To regenerate them, run:
+
+    python scripts/make_readme_images.py
+
+Output goes to `docs/images/`.
 
 ## Status
 
