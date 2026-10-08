@@ -1,0 +1,368 @@
+# ===== CELL [2] (code) =====
+# ============================================================
+# SCIENTIFIC CORE IMPORTS
+# ============================================================
+
+import io
+import urllib.request
+from pathlib import Path
+from copy import deepcopy
+import warnings
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from PIL import Image
+from scipy.ndimage import (
+    rotate,
+    shift,
+    median_filter,
+    gaussian_filter
+)
+from scipy.optimize import (
+    least_squares,
+    curve_fit
+)
+
+from typing import Any
+
+
+def _require_finite_2d(image, name="image"):
+    """Проверка научного входного массива."""
+    arr = np.asarray(image, dtype=np.float64)
+    if arr.ndim != 2:
+        raise ValueError(
+            f"{name} должен быть двумерным; получена форма {arr.shape}."
+        )
+    if arr.size == 0:
+        raise ValueError(f"{name} пуст.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError(f"{name} содержит NaN или бесконечные значения.")
+    return arr
+
+
+# ===== CELL [3] (code) =====
+def load_image(source):
+    """Надёжная загрузка изображения без потери исходного динамического диапазона."""
+    try:
+        if isinstance(source, np.ndarray):
+            image = np.asarray(source).copy()
+        elif isinstance(source, (str, Path)):
+            source = str(source)
+            if source.startswith(("http://", "https://")):
+                with urllib.request.urlopen(source, timeout=15) as response:
+                    image_bytes = response.read()
+                with Image.open(io.BytesIO(image_bytes)) as pil_image:
+                    image = np.asarray(pil_image).copy()
+            else:
+                source_path = Path(source)
+                if not source_path.exists():
+                    raise FileNotFoundError(f"Файл изображения не найден: {source_path}")
+                with Image.open(source_path) as pil_image:
+                    image = np.asarray(pil_image).copy()
+        else:
+            raise TypeError("source должен быть путём/URL или numpy.ndarray.")
+    except Exception as exc:
+        raise RuntimeError(f"Не удалось загрузить изображение: {exc}") from exc
+
+    if image.ndim == 3:
+        if image.shape[-1] < 3:
+            raise ValueError(f"Неподдерживаемая многоканальная форма: {image.shape}.")
+        rgb = np.asarray(image[..., :3], dtype=np.float64)
+        image = (0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2])
+    elif image.ndim != 2:
+        raise ValueError(
+            f"Ожидалось 2D grayscale или RGB/RGBA изображение; форма {image.shape}."
+        )
+
+    image = np.asarray(image, dtype=np.float64)
+    if image.size == 0:
+        raise ValueError("Изображение пустое.")
+    if not np.all(np.isfinite(image)):
+        raise ValueError("Изображение содержит NaN или бесконечные значения.")
+    if not np.ptp(image) > 0:
+        raise ValueError("Изображение не имеет динамического диапазона: все пиксели одинаковы.")
+    return image
+
+
+# ===== CELL [4] (code) =====
+# ============================================================
+# METROLOGY / CAMERA / QA HELPERS
+# ============================================================
+
+LENGTH_UNITS_UM = {
+    "um": 1.0,
+    "µm": 1.0,
+    "μm": 1.0,
+    "nm": 1e-3,
+    "pm": 1e-6,
+    "A": 1e-4,
+    "Å": 1e-4,
+    "px": None,
+}
+
+
+def length_to_um(value, unit):
+    unit_key = str(unit).strip()
+    if unit_key not in LENGTH_UNITS_UM or LENGTH_UNITS_UM[unit_key] is None:
+        raise ValueError(f"Неизвестная единица длины для физической калибровки: {unit}")
+    return float(value) * LENGTH_UNITS_UM[unit_key]
+
+
+def um_to_unit(value_um, unit):
+    unit_key = str(unit).strip()
+    if unit_key not in LENGTH_UNITS_UM or LENGTH_UNITS_UM[unit_key] is None:
+        raise ValueError(f"Неизвестная единица отображения: {unit}")
+    return float(value_um) / LENGTH_UNITS_UM[unit_key]
+
+
+def resolve_pixel_scale_um(calibration):
+    """Возвращает физический размер пикселя в µm/px."""
+    if calibration is None or not calibration.get("enabled", False):
+        return None
+
+    mode = calibration.get("mode", "direct")
+    if mode == "direct":
+        value = calibration.get("pixel_size", None)
+        unit = calibration.get("pixel_unit", "um")
+        if value is None or float(value) <= 0:
+            raise ValueError("Для direct-калибровки нужен pixel_size > 0.")
+        return length_to_um(value, unit)
+
+    if mode == "magnification":
+        camera_pixel_um = calibration.get("camera_pixel_size_um", None)
+        magnification = calibration.get("magnification", None)
+        if camera_pixel_um is None or float(camera_pixel_um) <= 0:
+            raise ValueError("Для magnification-калибровки нужен camera_pixel_size_um > 0.")
+        if magnification is None or float(magnification) <= 0:
+            raise ValueError("Для magnification-калибровки нужно magnification > 0.")
+        return float(camera_pixel_um) / float(magnification)
+
+    raise ValueError("calibration['mode'] должен быть 'direct' или 'magnification'.")
+
+
+def calibration_summary(calibration):
+    scale_um = resolve_pixel_scale_um(calibration)
+    if scale_um is None:
+        return {
+            "enabled": False,
+            "pixel_size_um": None,
+            "display_unit": "px",
+            "relative_uncertainty": None,
+            "method": calibration.get("mode", "disabled") if calibration else "disabled",
+        }
+    rel = float(calibration.get("uncertainty_percent", 0.0)) / 100.0
+    return {
+        "enabled": True,
+        "pixel_size_um": scale_um,
+        "display_unit": calibration.get("display_unit", "um"),
+        "relative_uncertainty": rel,
+        "method": calibration.get("method", calibration.get("mode", "direct")),
+    }
+
+
+def validate_calibration_config(calibration):
+    """Строгая проверка метрологической конфигурации до запуска анализа."""
+    if calibration is None or not calibration.get("enabled", False):
+        return {"enabled": False, "valid": True}
+    display_unit = calibration.get("display_unit", "um")
+    if display_unit not in LENGTH_UNITS_UM or LENGTH_UNITS_UM[display_unit] is None:
+        raise ValueError(f"Неподдерживаемая display_unit: {display_unit}")
+    scale_um = resolve_pixel_scale_um(calibration)
+    unc = float(calibration.get("uncertainty_percent", 0.0))
+    if not 0 <= unc < 100:
+        raise ValueError("uncertainty_percent должна быть в диапазоне [0, 100).")
+    method = str(calibration.get("method", "")).strip()
+    if not method:
+        raise ValueError("Для включённой калибровки необходимо указать calibration['method'].")
+    return {"enabled": True, "valid": True, "pixel_size_um": scale_um,
+            "display_unit": display_unit, "relative_uncertainty": unc / 100.0, "method": method}
+
+
+def convert_px_to_display(values_px, calibration, output_unit=None):
+    """Переводит px в выбранную физическую единицу; при отключённой калибровке возвращает px."""
+    values = np.asarray(values_px, dtype=float)
+    scale_um = resolve_pixel_scale_um(calibration)
+    if scale_um is None:
+        return values
+    unit = output_unit or calibration.get("display_unit", "um")
+    return values * scale_um / LENGTH_UNITS_UM[unit]
+
+
+def _load_optional_frame(frame_source, name):
+    if frame_source is None:
+        return None
+    arr = load_image(frame_source)
+    return _require_finite_2d(arr, name)
+
+
+def apply_camera_corrections(image, dark_frame=None, flat_field=None, flat_floor=1e-6):
+    """Опциональные dark/flat corrections. По умолчанию оба режима отключены."""
+    image = _require_finite_2d(image, "image")
+    corrected = image.copy()
+
+    if dark_frame is not None:
+        dark = _load_optional_frame(dark_frame, "dark_frame")
+        if dark.shape != corrected.shape:
+            raise ValueError(f"dark_frame имеет форму {dark.shape}, а изображение {corrected.shape}.")
+        corrected = corrected - dark
+
+    flat_normalized = None
+    if flat_field is not None:
+        flat = _load_optional_frame(flat_field, "flat_field")
+        if flat.shape != corrected.shape:
+            raise ValueError(f"flat_field имеет форму {flat.shape}, а изображение {corrected.shape}.")
+        flat_normalized = flat / np.median(flat)
+        flat_normalized = np.where(np.abs(flat_normalized) < flat_floor, np.nan, flat_normalized)
+        corrected = corrected / flat_normalized
+
+    if not np.all(np.isfinite(corrected)):
+        raise ValueError("После dark/flat correction появились NaN/inf.")
+
+    return corrected, {
+        "dark_enabled": dark_frame is not None,
+        "flat_enabled": flat_field is not None,
+    }
+
+
+def acquisition_saturation_diagnostics(source, image):
+    """Проверяет потенциальное насыщение исходного сенсора, если доступен integer-кодовый диапазон."""
+    diagnostics = {
+        "available": False,
+        "dtype": None,
+        "bit_depth": None,
+        "saturated_pixels": 0,
+        "saturated_fraction": 0.0,
+        "status": "not_available",
+    }
+
+    raw = None
+    try:
+        if isinstance(source, np.ndarray):
+            raw = np.asarray(source)
+        elif isinstance(source, (str, Path)):
+            with Image.open(source) as pil_image:
+                raw = np.asarray(pil_image)
+        else:
+            # URL/нестандартный источник: безопасно сообщаем, что автоматическая
+            # оценка аппаратного full-scale недоступна.
+            raw = None
+    except Exception as exc:
+        diagnostics["status"] = f"unavailable: {exc}"
+        return diagnostics
+
+    if raw is None or not np.issubdtype(raw.dtype, np.integer):
+        diagnostics["status"] = "not_available_for_noninteger_source"
+        return diagnostics
+
+    max_code = np.iinfo(raw.dtype).max
+    sat = raw >= max_code
+    sat_pixels = np.any(sat[..., :3], axis=-1) if raw.ndim == 3 else sat
+    diagnostics["available"] = True
+    diagnostics["dtype"] = str(raw.dtype)
+    diagnostics["bit_depth"] = int(np.iinfo(raw.dtype).bits)
+    diagnostics["saturated_pixels"] = int(np.count_nonzero(sat_pixels))
+    diagnostics["saturated_fraction"] = float(np.mean(sat_pixels))
+
+    if diagnostics["saturated_fraction"] > 0:
+        diagnostics["status"] = "WARNING_SATURATION"
+    else:
+        diagnostics["status"] = "OK"
+    return diagnostics
+
+
+def radiometric_convert_intensity(values, radiometry_config):
+    """Опционально переводит относительный/калиброванный сигнал в W/cm².
+
+    Коэффициент должен быть получен независимой радиометрической калибровкой;
+    программа не предполагает его автоматически.
+    """
+    values = np.asarray(values, dtype=float)
+    if radiometry_config is None or not radiometry_config.get("enabled", False):
+        return values
+    factor = radiometry_config.get("factor_to_W_cm2", None)
+    if factor is None or float(factor) <= 0:
+        raise ValueError("Для radiometry.enabled=True нужен factor_to_W_cm2 > 0.")
+    return values * float(factor)
+
+
+def gaussian_psf_correct_width(width_px, psf_width_px):
+    """Опциональная модель для Gaussian-PSF: w_obs² ≈ w_true² + w_psf²."""
+    width_px = float(width_px)
+    psf_width_px = float(psf_width_px)
+    if width_px < 0 or psf_width_px < 0:
+        raise ValueError("Ширины должны быть неотрицательными.")
+    corrected_sq = width_px**2 - psf_width_px**2
+    if corrected_sq <= 0:
+        return np.nan
+    return float(np.sqrt(corrected_sq))
+
+
+def apply_psf_metadata(profile_results, psf_config):
+    """Добавляет PSF-corrected Gaussian widths, не уничтожая исходные измерения."""
+    results = deepcopy(profile_results)
+    if not psf_config.get("enabled", False):
+        for item in results:
+            item["psf_correction_enabled"] = False
+        return results
+
+    psf_w_px = psf_config.get("w_psf_px", None)
+    if psf_w_px is None or float(psf_w_px) <= 0:
+        raise ValueError("При включённой PSF correction требуется w_psf_px > 0.")
+
+    for item in results:
+        if item.get("success", False):
+            w_obs = float(item.get("beam_radius_w", np.nan))
+            w_corr = gaussian_psf_correct_width(w_obs, psf_w_px)
+            item["psf_correction_enabled"] = True
+            item["w_psf_px"] = float(psf_w_px)
+            item["beam_radius_w_psf_corrected"] = w_corr
+            item["diameter_1e2_psf_corrected"] = 2.0 * w_corr if np.isfinite(w_corr) else np.nan
+        else:
+            item["psf_correction_enabled"] = True
+            item["beam_radius_w_psf_corrected"] = np.nan
+            item["diameter_1e2_psf_corrected"] = np.nan
+    return results
+
+
+def build_sensitivity_uncertainty_budget(reference_value, sigma_results=None, center_results=None,
+                                         regularization_results=None, method_relative_difference=0.0,
+                                         calibration_relative_uncertainty=0.0):
+    """Sensitivity-based engineering uncertainty estimate (не заменяет полный GUM budget)."""
+    ref = float(reference_value)
+    if not np.isfinite(ref) or ref == 0:
+        return {"status": "not_available"}
+
+    components = {}
+    if sigma_results:
+        vals = np.array([x.get("diameter_1e2", np.nan) for x in sigma_results], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            components["preprocessing_sigma"] = float((np.max(vals)-np.min(vals))/(2*abs(ref)))
+    if center_results:
+        vals = np.array([x.get("diameter_1e2", np.nan) for x in center_results if x.get("success", False)], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            components["abel_center"] = float((np.max(vals)-np.min(vals))/(2*abs(ref)))
+    if regularization_results:
+        vals = np.array([x.get("diameter_1e2", np.nan) for x in regularization_results], dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            components["basex_regularization"] = float((np.max(vals)-np.min(vals))/(2*abs(ref)))
+
+    components["method_difference"] = abs(float(method_relative_difference)) / 2.0
+    components["calibration"] = abs(float(calibration_relative_uncertainty))
+
+    u_combined_rel = float(np.sqrt(np.sum(np.square(list(components.values())))))
+    return {
+        "status": "available",
+        "reference_value": ref,
+        "relative_sensitivity_envelope_rss": u_combined_rel,
+        "sensitivity_envelope_k2": 2.0 * u_combined_rel,
+        "absolute_sensitivity_envelope_k2": 2.0 * u_combined_rel * abs(ref),
+        "components": components,
+        "is_traceable_gum_uncertainty": False,
+        "note": "Engineering sensitivity envelope assembled from observed parameter ranges; not a metrologically traceable ISO/GUM uncertainty budget.",
+    }
+

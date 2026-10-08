@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laser-beam-analysis"
+version = "0.1.0"
+description = "Python pipeline for quantitative laser beam profile analysis: image preprocessing, beam-axis detection, inverse Abel reconstruction (BASEX + Hansen–Law), radial Gaussian fitting, beam propagation analysis and QA/QC reporting."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Stanislav" }]
+license = { text = "MIT" }
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "pandas>=2.2",
+    "matplotlib>=3.8",
+    "pillow>=10.0",
+    "pyabel>=0.9",
+    "ipywidgets>=8.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+notebook = ["jupyter>=1.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
