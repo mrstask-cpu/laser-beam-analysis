@@ -26,6 +26,11 @@ from .abel import (
     inverse_abel_hansenlaw,
     basex_regularization_sweep,
 )
+from .profiles import (
+    extract_radial_profile,
+    extract_symmetric_radial_profile,
+    fit_gaussian_radial_profile,
+)
 
 __all__ = [
     "load_image",
@@ -46,4 +51,7 @@ __all__ = [
     "inverse_abel_basex",
     "inverse_abel_hansenlaw",
     "basex_regularization_sweep",
+    "extract_radial_profile",
+    "extract_symmetric_radial_profile",
+    "fit_gaussian_radial_profile",
 ]

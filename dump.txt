@@ -1,482 +1,714 @@
-# ===== CELL [18] (code) =====
-def inverse_abel_basex(
-    img_array,
-    origin_x,
-    regularization=50,
-    symmetry_axis=0,
-    debug_plot=True
+# ===== CELL [24] (code) =====
+def extract_radial_profile(abel_image, z_index, center_column=None, max_radius=None, symmetric=True):
+    """Извлекает I(r) из Abel-реконструкции.
+
+    По умолчанию используется среднее левой и правой половины, что делает
+    последующие Gaussian fits независимыми от произвольного выбора стороны.
+    symmetric=False оставлен только как диагностический режим.
+    """
+    abel_image = _require_finite_2d(abel_image, "abel_image")
+    h, w = abel_image.shape
+    z_index = int(z_index)
+    if not 0 <= z_index < h:
+        raise IndexError(f"z_index должен быть в диапазоне 0...{h-1}.")
+
+    if symmetric:
+        return extract_symmetric_radial_profile(
+            abel_image, z_index=z_index, center_column=center_column, max_radius=max_radius
+        )[:2]
+
+    if center_column is None:
+        if w % 2 == 0:
+            raise ValueError("Для одностороннего Abel-профиля ожидается нечётная ширина результата.")
+        center_column = w // 2
+    else:
+        center_column = int(center_column)
+    if not 0 <= center_column < w:
+        raise ValueError("Некорректная центральная колонка.")
+
+    profile = abel_image[z_index, center_column:].copy()
+    r = np.arange(profile.size, dtype=np.float64)
+    if max_radius is not None:
+        max_radius = float(max_radius)
+        if not np.isfinite(max_radius) or max_radius <= 0:
+            raise ValueError("max_radius должен быть положительным.")
+        keep = r <= max_radius
+        r, profile = r[keep], profile[keep]
+    if profile.size < 8:
+        raise ValueError("После ограничения радиуса осталось слишком мало точек для анализа.")
+    return r, profile
+
+
+def extract_symmetric_radial_profile(abel_image, z_index, center_column=None, max_radius=None):
+    """Строит I(r) как среднее левой и правой половины реконструкции.
+
+    Возвращает также side_consistency — диагностику того, насколько две стороны
+    независимого реконструированного профиля согласуются до усреднения.
+    """
+    abel_image = _require_finite_2d(abel_image, "abel_image")
+    h, w = abel_image.shape
+    z_index = int(z_index)
+    if not 0 <= z_index < h:
+        raise IndexError(f"z_index должен быть в диапазоне 0...{h-1}.")
+
+    center = (w - 1) / 2.0 if center_column is None else float(center_column)
+    if not (0 <= center <= w - 1):
+        raise ValueError("Некорректный center_column.")
+
+    available_radius = min(center, (w - 1) - center)
+    if max_radius is None:
+        max_radius = available_radius
+    max_radius = float(max_radius)
+    if max_radius <= 0:
+        raise ValueError("max_radius должен быть > 0.")
+    max_radius = min(max_radius, available_radius)
+
+    r = np.arange(0.0, np.floor(max_radius) + 1.0, 1.0)
+    x_left = center - r
+    x_right = center + r
+    row = abel_image[z_index]
+    left = np.interp(x_left, np.arange(w, dtype=float), row)
+    right = np.interp(x_right, np.arange(w, dtype=float), row)
+
+    profile = 0.5 * (left + right)
+    denom = max(float(np.max(np.abs(profile))), np.finfo(float).eps)
+    side_diff = left - right
+    normalized_rms = float(np.sqrt(np.mean(side_diff**2)) / denom)
+    corr = float(np.corrcoef(left, right)[0, 1]) if left.size > 1 else np.nan
+
+    return r, profile, {
+        "left_profile": left,
+        "right_profile": right,
+        "normalized_rms_difference": normalized_rms,
+        "correlation": corr,
+        "radius_max": float(max_radius),
+    }
+
+
+# ===== CELL [27] (code) =====
+def fit_gaussian_radial_profile(
+    r,
+    profile,
+    fit_fraction=0.05,
+    robust=True,
+    r0_max=3.0
 ):
     """
-    Inverse Abel transform методом BASEX.
+    Gaussian fit радиального профиля:
 
-    Parameters
-    ----------
-    img_array : np.ndarray
-        Предварительно обработанная 2D projection image.
+        I(r) = B + A * exp(-(r-r0)^2 / (2*sigma^2))
 
-    origin_x : float
-        Найденная координата вертикальной оси симметрии.
+    Дополнительно рассчитываются:
 
-    regularization : float
-        Tikhonov regularization parameter для BASEX.
+        R_1/e
+        R_1/e²
+        D_1/e
+        D_1/e²
 
-    symmetry_axis : int
-        0 означает симметрию относительно вертикальной оси,
-        то есть левую/правую часть изображения.
+        Gaussian beam radius w = R_1/e² = 2*sigma
+        Gaussian beam diameter 2w = D_1/e²
 
-    debug_plot : bool
-        Показывать результат.
+        FWHM
 
-    Returns
-    -------
-    reconstructed : np.ndarray
-        Восстановленное 2D распределение I(r,z).
+        R²_signal
+        R²_full
 
-    transform : abel.Transform
-        Объект PyAbel с дополнительной информацией.
+        RMSE_signal
+        RMSE_full
+
+        NRMSE_full
+        max_abs_residual_full
+
+    ВАЖНО:
+    R²_signal показывает качество fit только в области,
+    использованной оптимизатором.
+
+    R²_full показывает качество Gaussian относительно
+    всего доступного радиального профиля.
     """
 
-    import abel
-
-    img_array = np.asarray(
-        img_array,
+    r = np.asarray(
+        r,
         dtype=np.float64
     )
 
-    if img_array.ndim != 2:
-        raise ValueError(
-            "Для Abel inversion нужен 2D-массив."
-        )
-
-    if not np.all(np.isfinite(img_array)):
-        raise ValueError(
-            "Входное изображение содержит NaN или inf."
-        )
-
-    if regularization < 0:
-        raise ValueError(
-            "regularization не может быть отрицательным."
-        )
-
-    # PyAbel принимает origin в формате (y, x).
-    #
-    # Мы точно знаем только X-координату,
-    # поэтому Y оставляем None.
-    origin = (
-        None,
-        float(origin_x)
+    profile = np.asarray(
+        profile,
+        dtype=np.float64
     )
 
-    print("=== Abel inversion: BASEX ===")
-    print(f"Метод:               BASEX")
-    print(f"Origin X:            {origin_x:.5f} px")
-    print(f"Regularization:      {regularization}")
-    print()
+    # ============================================================
+    # Проверки входных данных
+    # ============================================================
 
-    transform = abel.Transform(
-        img_array,
-        direction="inverse",
-        method="basex",
+    if r.ndim != 1 or profile.ndim != 1:
+        raise ValueError(
+            "r и profile должны быть 1D."
+        )
 
-        # Точный найденный центр
-        origin=origin,
+    if r.size != profile.size:
+        raise ValueError(
+            "r и profile должны иметь одинаковый размер."
+        )
 
-        # Для Abel физически используем левую/правую симметрию.
-        symmetry_axis=symmetry_axis,
+    if r.size < 8:
+        raise ValueError(
+            "Слишком мало точек для Gaussian fit."
+        )
 
-        # Усредняем обе половины.
-        symmetrize_method="average",
+    if not np.all(np.isfinite(r)):
+        raise ValueError(
+            "r содержит NaN/inf."
+        )
 
-        # Требуется для BASEX.
-        center_options={
-            "odd_size": True,
-            "axes": 1,
-            "crop": "valid_region"
-        },
+    if not np.all(np.isfinite(profile)):
+        raise ValueError(
+            "profile содержит NaN/inf."
+        )
 
-        # Параметры BASEX.
-        transform_options={
-            "reg": regularization
-        },
+    if not 0 < fit_fraction < 1:
+        raise ValueError(
+            "fit_fraction должен быть между 0 и 1."
+        )
 
-        recast_as_float64=True,
-        verbose=True
+    if r0_max <= 0:
+        raise ValueError(
+            "r0_max должен быть > 0."
+        )
+
+    # ============================================================
+    # 1. Начальные оценки
+    # ============================================================
+
+    peak_index = int(
+        np.argmax(profile)
     )
 
-    reconstructed = transform.transform
+    peak_value = float(
+        profile[peak_index]
+    )
+
+    if peak_value <= 0:
+        raise ValueError(
+            "Профиль не содержит положительного сигнала."
+        )
 
     # ------------------------------------------------------------
-    # Небольшая защита от численного отрицательного хвоста
+    # Оценка baseline по дальнему хвосту
     # ------------------------------------------------------------
 
-    negative_fraction = np.mean(
-        reconstructed < 0
+    tail_start = max(
+        int(0.8 * len(profile)),
+        peak_index + 5
     )
 
-    min_value = np.min(
-        reconstructed
+    tail = profile[
+        tail_start:
+    ]
+
+    if tail.size > 0:
+
+        baseline_guess = float(
+            np.median(tail)
+        )
+
+    else:
+
+        baseline_guess = 0.0
+
+    signal = (
+        profile -
+        baseline_guess
     )
 
-    max_value = np.max(
-        reconstructed
+    amplitude_guess = max(
+        float(np.max(signal)),
+        np.finfo(float).eps
     )
 
-    print("=== Результат BASEX ===")
-    print(f"Размер результата:    {reconstructed.shape}")
-    print(f"Минимум:              {min_value:.6g}")
-    print(f"Максимум:             {max_value:.6g}")
-    print(
-        f"Доля отрицательных "
-        f"пикселей:             {negative_fraction:.6%}"
+    # ============================================================
+    # 2. Первичная оценка sigma
+    # ============================================================
+
+    target = (
+        baseline_guess +
+        amplitude_guess / np.e
     )
-    print()
 
-    if debug_plot:
+    above = np.where(
+        profile >= target
+    )[0]
 
-        fig, axes = plt.subplots(
-            1,
-            2,
-            figsize=(14, 5)
+    if above.size >= 2:
+
+        radius_guess = float(
+            r[above[-1]]
         )
 
-        axes[0].imshow(
-            img_array,
-            cmap="viridis",
-            aspect="auto"
-        )
+    else:
 
-        axes[0].set_title(
-            "Projection"
-        )
-
-        axes[0].set_xlabel("X, px")
-        axes[0].set_ylabel("Z, px")
-
-        im = axes[1].imshow(
-            reconstructed,
-            cmap="viridis",
-            aspect="auto"
-        )
-
-        axes[1].set_title(
-            "Inverse Abel / BASEX"
-        )
-
-        axes[1].set_xlabel("r, px")
-        axes[1].set_ylabel("Z, px")
-
-        plt.colorbar(
-            im,
-            ax=axes[1]
-        )
-
-        plt.tight_layout()
-        plt.show()
-
-    return reconstructed, transform
-
-# ===== CELL [20] (code) =====
-def basex_regularization_sweep(
-    img_array,
-    origin_x,
-    regularization_values=None,
-    debug_plot=True
-):
-    """
-    Исследует влияние регуляризации BASEX.
-
-    Для каждого значения рассчитывается:
-        - reconstructed image
-        - максимум
-        - минимум
-        - доля отрицательных значений
-        - минимальная относительная амплитуда
-        - оценка гладкости
-
-    Это исследовательский инструмент, а не финальный auto-selector.
-    """
-
-    if regularization_values is None:
-        regularization_values = [
-            0,
-            1,
-            5,
-            10,
-            25,
-            50,
-            100,
-            200
-        ]
-
-    import abel
-
-    results = {}
-
-    for reg in regularization_values:
-
-        print(
-            f"\n=== BASEX regularization = {reg} ==="
-        )
-
-        transform = abel.Transform(
-            img_array,
-            direction="inverse",
-            method="basex",
-
-            origin=(
-                None,
-                float(origin_x)
-            ),
-
-            symmetry_axis=0,
-            symmetrize_method="average",
-
-            center_options={
-                "odd_size": True,
-                "axes": 1,
-                "crop": "valid_region"
-            },
-
-            transform_options={
-                "reg": float(reg)
-            },
-
-            recast_as_float64=True,
-            verbose=False
-        )
-
-        recon = transform.transform
-
-        maximum = np.max(recon)
-        minimum = np.min(recon)
-
-        negative_fraction = np.mean(
-            recon < 0
-        )
-
-        relative_negative_amplitude = (
-            abs(minimum) / maximum
-            if maximum > 0
-            else np.nan
-        )
-
-        # --------------------------------------------------------
-        # Оценка шероховатости.
-        #
-        # Используем вторую производную только по X.
-        # Большие значения означают сильные локальные осцилляции.
-        # --------------------------------------------------------
-
-        second_derivative = np.diff(
-            recon,
-            n=2,
-            axis=1
-        )
-
-        roughness = np.sqrt(
-            np.mean(
-                second_derivative ** 2
+        radius_guess = max(
+            1.0,
+            float(
+                r[
+                    min(
+                        peak_index + 3,
+                        len(r) - 1
+                    )
+                ]
             )
         )
 
-        results[reg] = {
-            "transform": transform,
-            "image": recon,
-            "max": maximum,
-            "min": minimum,
-            "negative_fraction": negative_fraction,
-            "relative_negative_amplitude":
-                relative_negative_amplitude,
-            "roughness": roughness
-        }
-
-        print(
-            f"min = {minimum:.6g}"
-        )
-
-        print(
-            f"max = {maximum:.6g}"
-        )
-
-        print(
-            f"negative fraction = "
-            f"{negative_fraction:.3%}"
-        )
-
-        print(
-            f"relative negative amplitude = "
-            f"{relative_negative_amplitude:.4%}"
-        )
-
-        print(
-            f"roughness = "
-            f"{roughness:.6g}"
-        )
-
-    if debug_plot:
-
-        regs = np.array(
-            list(results.keys()),
-            dtype=float
-        )
-
-        neg_amp = np.array([
-            results[r]["relative_negative_amplitude"]
-            for r in results
-        ])
-
-        roughness = np.array([
-            results[r]["roughness"]
-            for r in results
-        ])
-
-        fig, axes = plt.subplots(
-            1,
-            2,
-            figsize=(14, 5)
-        )
-
-        axes[0].plot(
-            regs,
-            neg_amp,
-            marker="o"
-        )
-
-        axes[0].set_xlabel(
-            "BASEX regularization"
-        )
-
-        axes[0].set_ylabel(
-            "Relative negative amplitude"
-        )
-
-        axes[0].set_title(
-            "Негативный численный хвост"
-        )
-
-        axes[0].grid(
-            True,
-            alpha=0.3
-        )
-
-        axes[1].plot(
-            regs,
-            roughness,
-            marker="o"
-        )
-
-        axes[1].set_xlabel(
-            "BASEX regularization"
-        )
-
-        axes[1].set_ylabel(
-            "Roughness"
-        )
-
-        axes[1].set_title(
-            "Гладкость реконструкции"
-        )
-
-        axes[1].grid(
-            True,
-            alpha=0.3
-        )
-
-        plt.tight_layout()
-        plt.show()
-
-    return results
-
-# ===== CELL [22] (code) =====
-def inverse_abel_hansenlaw(
-    img_array,
-    origin_x,
-    symmetry_axis=0,
-    debug_plot=True
-):
-    """
-    Inverse Abel transform методом Hansen-Law.
-    Используется как независимая численная проверка BASEX.
-    """
-
-    import abel
-
-    img_array = np.asarray(
-        img_array,
-        dtype=np.float64
+    sigma_guess = max(
+        radius_guess / np.sqrt(2.0),
+        0.5
     )
 
-    if img_array.ndim != 2:
+    # ============================================================
+    # 3. Оценка r0
+    # ============================================================
+
+    r0_lower = 0.0
+
+    r0_upper = min(
+        float(r[-1]),
+        float(r0_max)
+    )
+
+    if r0_upper <= r0_lower:
         raise ValueError(
-            "Для Abel inversion нужен 2D-массив."
+            "Недостаточный радиальный диапазон "
+            "для оценки r0."
         )
 
-    if not np.all(np.isfinite(img_array)):
+    eps = min(
+        1e-6,
+        0.1 * max(r0_upper, 1.0)
+    )
+
+    r0_guess = np.clip(
+        float(r[peak_index]),
+        r0_lower + eps,
+        r0_upper - eps
+    )
+
+    # ============================================================
+    # 4. Fit mask
+    # ============================================================
+
+    threshold = (
+        baseline_guess +
+        fit_fraction * amplitude_guess
+    )
+
+    fit_mask = (
+        profile >= threshold
+    )
+
+    if np.count_nonzero(
+        fit_mask
+    ) < 8:
+
         raise ValueError(
-            "Изображение содержит NaN или inf."
+            "Недостаточно точек для Gaussian fit."
         )
 
-    transform = abel.Transform(
-        img_array,
-        direction="inverse",
-        method="hansenlaw",
+    fit_r = r[
+        fit_mask
+    ]
 
-        origin=(
-            None,
-            float(origin_x)
-        ),
+    fit_y = profile[
+        fit_mask
+    ]
 
-        symmetry_axis=symmetry_axis,
-        symmetrize_method="average",
+    # ============================================================
+    # 5. Gaussian model
+    # ============================================================
 
-        center_options={
-            "odd_size": True,
-            "axes": 1,
-            "crop": "valid_region"
-        },
+    def gaussian_model(
+        params,
+        x
+    ):
 
-        recast_as_float64=True,
-        verbose=True
+        amplitude, r0, sigma, baseline = (
+            params
+        )
+
+        return (
+            baseline +
+            amplitude *
+            np.exp(
+                -(
+                    (x - r0) ** 2
+                ) /
+                (
+                    2.0 *
+                    sigma ** 2
+                )
+            )
+        )
+
+    def residuals(params):
+
+        return (
+            gaussian_model(
+                params,
+                fit_r
+            )
+            -
+            fit_y
+        )
+
+    initial = np.array([
+        amplitude_guess,
+        r0_guess,
+        sigma_guess,
+        baseline_guess
+    ])
+
+    sigma_upper = max(
+        2.0 * float(r[-1]),
+        1.0
     )
 
-    reconstructed = transform.transform
+    lower = np.array([
+        0.0,
+        r0_lower,
+        0.05,
+        -np.inf
+    ])
 
-    print("=== Результат Hansen-Law ===")
-    print(
-        f"Размер результата: "
-        f"{reconstructed.shape}"
+    upper = np.array([
+        np.inf,
+        r0_upper,
+        sigma_upper,
+        np.inf
+    ])
+
+    # ============================================================
+    # 6. Optimization
+    # ============================================================
+
+    if robust:
+
+        fit = least_squares(
+            residuals,
+            x0=initial,
+            bounds=(
+                lower,
+                upper
+            ),
+            loss="soft_l1",
+            f_scale=max(
+                np.std(fit_y),
+                1e-6
+            )
+        )
+
+    else:
+
+        fit = least_squares(
+            residuals,
+            x0=initial,
+            bounds=(
+                lower,
+                upper
+            )
+        )
+
+    if not fit.success:
+
+        raise RuntimeError(
+            f"Gaussian fit не сошёлся: "
+            f"{fit.message}"
+        )
+
+    amplitude, r0, sigma_r, baseline = (
+        fit.x
     )
 
-    print(
-        f"Диапазон: "
-        f"{reconstructed.min():.6g} ... "
-        f"{reconstructed.max():.6g}"
+    # ============================================================
+    # 7. Физические параметры Gaussian
+    # ============================================================
+
+    # Уровень 1/e
+    radius_1e = (
+        np.sqrt(2.0) *
+        sigma_r
     )
 
-    if debug_plot:
+    # Уровень 1/e²
+    radius_1e2 = (
+        2.0 *
+        sigma_r
+    )
 
-        plt.figure(
-            figsize=(8, 5)
+    diameter_1e = (
+        2.0 *
+        radius_1e
+    )
+
+    diameter_1e2 = (
+        2.0 *
+        radius_1e2
+    )
+
+    # Стандартный Gaussian beam radius:
+    #
+    # I(r) = I0 exp(-2r²/w²)
+    #
+    # => w = 2 sigma
+    beam_radius_w = (
+        2.0 *
+        sigma_r
+    )
+
+    beam_diameter_2w = (
+        2.0 *
+        beam_radius_w
+    )
+
+    fwhm = (
+        2.0 *
+        np.sqrt(
+            2.0 * np.log(2.0)
+        )
+        *
+        sigma_r
+    )
+
+    # Реальный максимум fitted Gaussian:
+    peak_intensity = (
+        baseline +
+        amplitude
+    )
+
+    # ============================================================
+    # 8. Полный fitted profile
+    # ============================================================
+
+    fitted = gaussian_model(
+        fit.x,
+        r
+    )
+
+    residual = (
+        profile -
+        fitted
+    )
+
+    fitted_used = gaussian_model(
+        fit.x,
+        fit_r
+    )
+
+    # ============================================================
+    # 9. Метрики качества
+    # ============================================================
+
+    def calculate_metrics(
+        y,
+        y_fit
+    ):
+
+        residual_local = (
+            y -
+            y_fit
         )
 
-        plt.imshow(
-            reconstructed,
-            cmap="viridis",
-            aspect="auto"
+        ss_res = np.sum(
+            residual_local ** 2
         )
 
-        plt.title(
-            "Inverse Abel / Hansen-Law"
+        ss_tot = np.sum(
+            (
+                y -
+                np.mean(y)
+            ) ** 2
         )
 
-        plt.xlabel("r, px")
-        plt.ylabel("Z, px")
+        if ss_tot > 0:
 
-        plt.colorbar(
-            label="Intensity"
+            r_squared = (
+                1.0 -
+                ss_res /
+                ss_tot
+            )
+
+        else:
+
+            r_squared = np.nan
+
+        rmse = np.sqrt(
+            np.mean(
+                residual_local ** 2
+            )
         )
 
-        plt.tight_layout()
-        plt.show()
+        data_range = (
+            np.max(y) -
+            np.min(y)
+        )
 
-    return reconstructed, transform
+        if data_range > 0:
+
+            nrmse = (
+                rmse /
+                data_range
+            )
+
+        else:
+
+            nrmse = np.nan
+
+        max_abs_residual = np.max(
+            np.abs(
+                residual_local
+            )
+        )
+
+        return (
+            r_squared,
+            rmse,
+            nrmse,
+            max_abs_residual
+        )
+
+    # Только точки, участвовавшие в fit
+    (
+        r2_signal,
+        rmse_signal,
+        nrmse_signal,
+        max_residual_signal
+    ) = calculate_metrics(
+        fit_y,
+        fitted_used
+    )
+
+    # Весь радиальный профиль
+    (
+        r2_full,
+        rmse_full,
+        nrmse_full,
+        max_residual_full
+    ) = calculate_metrics(
+        profile,
+        fitted
+    )
+
+    # ============================================================
+    # 10. Result
+    # ============================================================
+
+    return {
+
+        "success":
+            bool(fit.success),
+
+        "message":
+            fit.message,
+
+        # -----------------------------
+        # Gaussian parameters
+        # -----------------------------
+
+        "amplitude":
+            amplitude,
+
+        "peak_intensity":
+            peak_intensity,
+
+        "r0":
+            r0,
+
+        "sigma":
+            sigma_r,
+
+        "baseline":
+            baseline,
+
+        # -----------------------------
+        # Widths
+        # -----------------------------
+
+        "radius_1e":
+            radius_1e,
+
+        "radius_1e2":
+            radius_1e2,
+
+        "diameter_1e":
+            diameter_1e,
+
+        "diameter_1e2":
+            diameter_1e2,
+
+        # Standard Gaussian beam
+        "beam_radius_w":
+            beam_radius_w,
+
+        "beam_diameter_2w":
+            beam_diameter_2w,
+
+        "fwhm":
+            fwhm,
+
+        # -----------------------------
+        # Quality
+        # -----------------------------
+
+        "r_squared":
+            r2_signal,
+
+        "r_squared_signal":
+            r2_signal,
+
+        "r_squared_full":
+            r2_full,
+
+        "rmse":
+            rmse_signal,
+
+        "rmse_signal":
+            rmse_signal,
+
+        "rmse_full":
+            rmse_full,
+
+        "nrmse_signal":
+            nrmse_signal,
+
+        "nrmse_full":
+            nrmse_full,
+
+        "max_abs_residual_signal":
+            max_residual_signal,
+
+        "max_abs_residual_full":
+            max_residual_full,
+
+        # -----------------------------
+        # Fit internals
+        # -----------------------------
+
+        "fit_mask":
+            fit_mask,
+
+        "r":
+            r,
+
+        "profile":
+            profile,
+
+        "fitted_profile":
+            fitted,
+
+        "residual":
+            residual,
+
+        "optimizer_cost":
+            fit.cost,
+
+        "optimizer_optimality":
+            fit.optimality
+    }
