@@ -1,38 +1,38 @@
-# ===== CELL [12] (code) =====
-def find_abel_center(
+# ===== CELL [16] (code) =====
+def calculate_left_right_symmetry(
     img_array,
-    slice_width=10,
-    debug_plot=True
+    center_x,
+    radial_limit=None,
+    noise_floor=None
 ):
     """
-    Определяет точную вертикальную ось симметрии изображения
-    для последующего Abel-преобразования.
+    Робастная оценка симметрии изображения относительно вертикальной оси.
 
-    Поиск выполняется через PyAbel методом сравнения
-    противоположных половин изображения.
+    В отличие от предыдущей версии:
+    - не учитывает области, выходящие за границы изображения;
+    - может ограничивать анализ радиусом radial_limit;
+    - может исключать значения ниже шумового порога.
 
     Parameters
     ----------
     img_array : np.ndarray
-        Предварительно обработанное и геометрически
-        выровненное изображение.
+        2D обработанное изображение.
 
-    slice_width : int
-        Ширина области суммирования около оси.
+    center_x : float
+        Субпиксельная координата оси симметрии.
 
-    debug_plot : bool
-        Показывать диагностические графики.
+    radial_limit : float | None
+        Максимальный радиус анализа в пикселях.
+        Если None, используется весь перекрывающийся диапазон.
+
+    noise_floor : float | None
+        Шумовой порог. Если задан, слабые области не учитываются.
 
     Returns
     -------
-    center_xy : tuple
-        Координаты центра (y, x).
-
-    center_x : float
-        Точная координата Abel-оси по X.
+    metrics : dict
+        Набор метрик симметрии.
     """
-
-    import abel
 
     img_array = np.asarray(
         img_array,
@@ -41,7 +41,7 @@ def find_abel_center(
 
     if img_array.ndim != 2:
         raise ValueError(
-            "Для поиска центра требуется 2D-массив."
+            "Ожидалось 2D изображение."
         )
 
     if not np.all(np.isfinite(img_array)):
@@ -49,170 +49,179 @@ def find_abel_center(
             "Изображение содержит NaN или inf."
         )
 
-    if slice_width <= 0:
+    h, w = img_array.shape
+
+    x = np.arange(w, dtype=np.float64)
+
+    # Расстояние каждого пикселя от найденной оси.
+    radius = np.abs(x - center_x)
+
+    # Выбираем только точки, для которых зеркальная координата
+    # также находится внутри изображения.
+    mirrored_x = 2.0 * center_x - x
+
+    valid_geometry = (
+        (mirrored_x >= 0) &
+        (mirrored_x <= w - 1)
+    )
+
+    if radial_limit is not None:
+        if radial_limit <= 0:
+            raise ValueError(
+                "radial_limit должен быть > 0."
+            )
+
+        valid_geometry &= (
+            radius <= radial_limit
+        )
+
+    x_valid = x[valid_geometry]
+    mirrored_x_valid = mirrored_x[valid_geometry]
+
+    # Интерполируем зеркальное изображение.
+    mirrored = np.empty_like(img_array)
+
+    for y in range(h):
+
+        mirrored[y, valid_geometry] = np.interp(
+            mirrored_x_valid,
+            x,
+            img_array[y]
+        )
+
+    original = img_array[:, valid_geometry]
+    mirrored_valid = mirrored[:, valid_geometry]
+
+    # ------------------------------------------------------------
+    # Маска по шуму
+    # ------------------------------------------------------------
+
+    if noise_floor is not None:
+        signal_mask = (
+            0.5 * (
+                np.abs(original) +
+                np.abs(mirrored_valid)
+            ) > noise_floor
+        )
+    else:
+        signal_mask = np.ones_like(
+            original,
+            dtype=bool
+        )
+
+    # ------------------------------------------------------------
+    # Разность
+    # ------------------------------------------------------------
+
+    difference = (
+        original - mirrored_valid
+    )
+
+    signal_scale = 0.5 * (
+        np.abs(original) +
+        np.abs(mirrored_valid)
+    )
+
+    # Только физически информативные точки.
+    diff_used = difference[signal_mask]
+    signal_used = signal_scale[signal_mask]
+
+    if diff_used.size == 0:
         raise ValueError(
-            "slice_width должен быть > 0."
+            "После фильтрации не осталось информативных точек."
         )
 
-    # Современный API PyAbel.
-    #
-    # Используем только ось 1, потому что:
-    #
-    # axis = 0 -> вертикальное направление
-    # axis = 1 -> горизонтальное направление
-    #
-    # Abel-ось должна проходить вертикально через изображение.
-    center_xy = abel.tools.center.find_origin(
-        img_array,
-        method="slice",
-        axes=1,
-        slice_width=slice_width
+    rms_difference = np.sqrt(
+        np.mean(
+            diff_used ** 2
+        )
     )
 
-    center_y, center_x = center_xy
-
-    print("=== Точный Abel-центр ===")
-    print(f"Y-координата: {center_y:.4f} px")
-    print(f"X-координата: {center_x:.4f} px")
-    print()
-
-    if debug_plot:
-
-        plt.figure(
-            figsize=(9, 6)
+    rms_signal = np.sqrt(
+        np.mean(
+            signal_used ** 2
         )
-
-        plt.imshow(
-            img_array,
-            cmap="viridis",
-            aspect="auto"
-        )
-
-        plt.axvline(
-            center_x,
-            linestyle="--",
-            linewidth=2,
-            label=f"Abel axis = {center_x:.3f} px"
-        )
-
-        plt.xlabel("X, px")
-        plt.ylabel("Y, px")
-
-        plt.title(
-            "Точная ось симметрии для Abel-преобразования"
-        )
-
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
-
-    return center_xy, center_x
-
-# ===== CELL [14] (code) =====
-def compare_abel_center_methods(
-    img_array,
-    slice_width=10,
-    debug_plot=True
-):
-    """
-    Сравнивает несколько независимых методов определения Abel-origin.
-
-    Анализируем только X-координату, поскольку продольная ось
-    уже сделана вертикальной.
-    """
-
-    import abel
-
-    img_array = np.asarray(
-        img_array,
-        dtype=np.float64
     )
 
-    methods = [
-        "image_center",
-        "com",
-        "convolution",
-        "gaussian",
-        "slice"
-    ]
+    normalized_rms = (
+        rms_difference / rms_signal
+        if rms_signal > 0
+        else np.inf
+    )
 
-    results = {}
+    # ------------------------------------------------------------
+    # Корреляция
+    # ------------------------------------------------------------
 
-    print("=== Сравнение методов определения центра ===")
+    original_flat = original[signal_mask]
+    mirrored_flat = mirrored_valid[signal_mask]
 
-    for method in methods:
+    if (
+        np.std(original_flat) > 0
+        and np.std(mirrored_flat) > 0
+    ):
+        correlation = np.corrcoef(
+            original_flat,
+            mirrored_flat
+        )[0, 1]
+    else:
+        correlation = np.nan
 
-        try:
+    # ------------------------------------------------------------
+    # Максимальная относительная асимметрия
+    # ------------------------------------------------------------
 
-            origin = abel.tools.center.find_origin(
-                img_array,
-                method=method,
-                axes=1,
-                slice_width=slice_width
-            )
+    relative_difference = (
+        np.abs(difference) /
+        np.maximum(signal_scale, np.finfo(float).eps)
+    )
 
-            center_y, center_x = origin
+    relative_difference_used = (
+        relative_difference[signal_mask]
+    )
 
-            results[method] = {
-                "y": center_y,
-                "x": center_x
-            }
+    median_relative_difference = np.median(
+        relative_difference_used
+    )
 
-            print(
-                f"{method:15s} -> "
-                f"X = {center_x:.5f} px"
-            )
+    percentile95_relative_difference = np.percentile(
+        relative_difference_used,
+        95
+    )
 
-        except Exception as exc:
+    metrics = {
+        "normalized_rms": normalized_rms,
+        "correlation": correlation,
+        "median_relative_difference": median_relative_difference,
+        "p95_relative_difference": percentile95_relative_difference,
+        "number_of_points": diff_used.size
+    }
 
-            results[method] = {
-                "y": np.nan,
-                "x": np.nan,
-                "error": str(exc)
-            }
+    print("=== Проверка лево/право симметрии ===")
+    print(
+        f"Нормированная RMS ошибка: "
+        f"{normalized_rms:.5f}"
+    )
 
-            print(
-                f"{method:15s} -> ERROR: {exc}"
-            )
+    print(
+        f"Корреляция:               "
+        f"{correlation:.6f}"
+    )
 
-    if debug_plot:
+    print(
+        f"Медианная относительная "
+        f"асимметрия:               "
+        f"{median_relative_difference:.5f}"
+    )
 
-        names = []
-        values = []
+    print(
+        f"95-й процентиль:           "
+        f"{percentile95_relative_difference:.5f}"
+    )
 
-        for method, result in results.items():
+    print(
+        f"Использовано точек:        "
+        f"{diff_used.size}"
+    )
 
-            if np.isfinite(result["x"]):
-                names.append(method)
-                values.append(result["x"])
-
-        plt.figure(
-            figsize=(9, 4)
-        )
-
-        plt.bar(
-            names,
-            values
-        )
-
-        plt.axhline(
-            (img_array.shape[1] - 1) / 2,
-            linestyle="--",
-            label="Геометрический центр"
-        )
-
-        plt.xlabel("Метод")
-        plt.ylabel("X-координата, px")
-        plt.title(
-            "Сравнение методов определения Abel-центра"
-        )
-
-        plt.xticks(
-            rotation=20
-        )
-
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
-
-    return results
+    return metrics
