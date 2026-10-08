@@ -17,6 +17,7 @@ from .camera import (
     apply_camera_corrections,
     acquisition_saturation_diagnostics,
 )
+from .alignment import align_laser_beam
 
 __all__ = [
     "load_image",
@@ -29,4 +30,5 @@ __all__ = [
     "convert_px_to_display",
     "apply_camera_corrections",
     "acquisition_saturation_diagnostics",
+    "align_laser_beam",
 ]
