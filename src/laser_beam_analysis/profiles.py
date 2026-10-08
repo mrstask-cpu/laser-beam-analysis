@@ -142,9 +142,16 @@ def extract_symmetric_radial_profile(
     denom = max(float(np.max(np.abs(profile))), np.finfo(float).eps)
     side_diff = left - right
     normalized_rms = float(np.sqrt(np.mean(side_diff ** 2)) / denom)
-    corr = (
-        float(np.corrcoef(left, right)[0, 1]) if left.size > 1 else float("nan")
-    )
+
+    # Guard against constant inputs: corrcoef divides by std.
+    if (
+        left.size > 1
+        and float(np.std(left)) > 0.0
+        and float(np.std(right)) > 0.0
+    ):
+        corr = float(np.corrcoef(left, right)[0, 1])
+    else:
+        corr = float("nan")
 
     diagnostics = {
         "left_profile": left,

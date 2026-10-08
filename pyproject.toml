@@ -29,3 +29,8 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # matplotlib with Agg backend cannot display figures during tests;
+    # the call itself succeeds, only the warning is noise.
+    "ignore:FigureCanvasAgg is non-interactive:UserWarning",
+]

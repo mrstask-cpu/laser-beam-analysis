@@ -47,6 +47,12 @@ from .metrology import (
     apply_psf_metadata,
     build_sensitivity_uncertainty_budget,
 )
+from .visualization import (
+    radial_profile_to_xy_surface,
+    plot_beam_parameters,
+    plot_3d_beam_cross_section,
+    interactive_3d_cross_section,
+)
 
 __all__ = [
     "load_image",
@@ -80,4 +86,8 @@ __all__ = [
     "gaussian_psf_correct_width",
     "apply_psf_metadata",
     "build_sensitivity_uncertainty_budget",
+    "radial_profile_to_xy_surface",
+    "plot_beam_parameters",
+    "plot_3d_beam_cross_section",
+    "interactive_3d_cross_section",
 ]
