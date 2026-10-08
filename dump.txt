@@ -1,343 +1,208 @@
-# ===== CELL [37] (code) =====
-def plot_beam_parameters(
-    profile_results,
-    pixel_size=None,
-    unit="px",
-    radiometry=None,
-    figsize=(12, 6),
-    dpi=150
-):
-    """Продольные параметры с явным отображением физических единиц."""
-    valid = np.array([item.get("success", False) for item in profile_results], dtype=bool)
-    z = np.array([item["z_index"] for item in profile_results], dtype=float)
-
-    def get_array(name):
-        return np.array([item.get(name, np.nan) for item in profile_results], dtype=float)
-
-    peak = get_array("peak_intensity")
-    sigma = get_array("sigma")
-    w = get_array("beam_radius_w")
-    d1e = get_array("diameter_1e")
-    d1e2 = get_array("diameter_1e2")
-    fwhm = get_array("fwhm")
-    r2_signal = get_array("r_squared_signal")
-    r2_full = get_array("r_squared_full")
-    nrmse_full = get_array("nrmse_full")
-
-    if pixel_size is not None:
-        z_plot = z * pixel_size
-        sigma_plot = sigma * pixel_size
-        w_plot = w * pixel_size
-        d1e_plot = d1e * pixel_size
-        d1e2_plot = d1e2 * pixel_size
-        fwhm_plot = fwhm * pixel_size
-        unit_text = unit
-        x_label = f"Продольная координата, {unit}"
-        width_label = f"Диаметр, {unit}"
-        radius_label = f"Gaussian beam radius w, {unit}"
-        sigma_label = f"Gaussian sigma, {unit}"
-    else:
-        z_plot = z; sigma_plot = sigma; w_plot = w; d1e_plot = d1e; d1e2_plot = d1e2; fwhm_plot = fwhm
-        unit_text = "px"; x_label = "Продольная координата, px"; width_label = "Диаметр, px"; radius_label = "Gaussian beam radius w, px"; sigma_label = "Gaussian sigma, px"
-
-    peak_plot = radiometric_convert_intensity(peak, radiometry)
-    intensity_label = "Peak intensity, W/cm²" if radiometry and radiometry.get("enabled", False) else "Fitted peak intensity / relative signal"
-
-    for yvals, ylabel, title, extra in [
-        (peak_plot, intensity_label, "Продольная эволюция максимальной интенсивности", {}),
-        (None, width_label, "Продольная эволюция ширины пучка", {"widths": True}),
-        (w_plot, radius_label, "Gaussian beam radius w(z)", {}),
-        (sigma_plot, sigma_label, "Gaussian sigma(z)", {}),
-        (r2_signal, r"$R^2$", "Качество Gaussian approximation", {"quality": True}),
-        (nrmse_full, "NRMSE", "Нормированная ошибка Gaussian fit", {}),
-    ]:
-        plt.figure(figsize=figsize, dpi=dpi)
-        if extra.get("widths"):
-            plt.plot(z_plot, d1e_plot, marker="o", markersize=3, label="D 1/e")
-            plt.plot(z_plot, d1e2_plot, marker="o", markersize=3, label="D 1/e² = 2w")
-            plt.plot(z_plot, fwhm_plot, marker="o", markersize=3, label="FWHM")
-            plt.legend()
-        elif extra.get("quality"):
-            plt.plot(z_plot, r2_signal, marker="o", markersize=3, label=r"$R^2_{signal}$")
-            plt.plot(z_plot, r2_full, marker="o", markersize=3, label=r"$R^2_{full}$")
-            finite_r2 = np.concatenate([r2_signal[np.isfinite(r2_signal)], r2_full[np.isfinite(r2_full)]])
-            if finite_r2.size:
-                lo, hi = np.min(finite_r2), np.max(finite_r2); span=max(hi-lo,0.01)
-                plt.ylim(lo-0.1*span, min(1.01,hi+0.1*span))
-            plt.legend()
-        else:
-            plt.plot(z_plot, yvals, marker="o", markersize=3)
-        plt.xlabel(x_label)
-        plt.ylabel(ylabel)
-        plt.title(title)
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout(); plt.show()
-
-    return {"z": z, "valid": valid, "peak_intensity": peak, "sigma": sigma, "beam_radius_w": w,
-            "diameter_1e": d1e, "diameter_1e2": d1e2, "fwhm": fwhm,
-            "r_squared_signal": r2_signal, "r_squared_full": r2_full, "nrmse_full": nrmse_full,
-            "z_plot": z_plot, "unit": unit_text}
+# ===== CELL [68] (code) =====
+from dataclasses import dataclass, field
+from typing import Any
 
 
-# ===== CELL [49] (code) =====
-def radial_profile_to_xy_surface(
-    r,
-    profile,
-    xy_step=1.0,
-    radius_max=None
-):
+@dataclass
+class BeamAnalysisResult:
     """
-    Преобразует осесимметричный I(r)
-    в двумерное I(x,y).
+    Единый контейнер всех результатов анализа пучка.
 
-    I(x,y) = I(sqrt(x²+y²))
-
-    Returns
-    -------
-    X, Y, I_xy
+    Используется как промежуточный API между
+    научным ядром и будущим GUI.
     """
 
-    r = np.asarray(
-        r,
-        dtype=np.float64
+    # --------------------------------------------------------
+    # Images
+    # --------------------------------------------------------
+
+    raw_image: Any = None
+    aligned_image: Any = None
+    processed_image: Any = None
+
+    basex_image: Any = None
+    hansenlaw_image: Any = None
+
+    # --------------------------------------------------------
+    # Metadata
+    # --------------------------------------------------------
+
+    image_shape: tuple | None = None
+
+    # --------------------------------------------------------
+    # Alignment
+    # --------------------------------------------------------
+
+    alignment: dict = field(
+        default_factory=dict
     )
 
-    profile = np.asarray(
-        profile,
-        dtype=np.float64
+    # --------------------------------------------------------
+    # Preprocessing
+    # --------------------------------------------------------
+
+    preprocessing: dict = field(
+        default_factory=dict
     )
 
-    if r.ndim != 1 or profile.ndim != 1:
-        raise ValueError(
-            "r и profile должны быть 1D."
-        )
+    # --------------------------------------------------------
+    # Abel center
+    # --------------------------------------------------------
 
-    if len(r) != len(profile):
-        raise ValueError(
-            "r и profile должны иметь одинаковую длину."
-        )
-
-    if xy_step <= 0:
-        raise ValueError(
-            "xy_step должен быть > 0."
-        )
-
-    if radius_max is None:
-        radius_max = r[-1]
-
-    if radius_max <= 0:
-        raise ValueError(
-            "radius_max должен быть > 0."
-        )
-
-    xy = np.arange(
-        -radius_max,
-        radius_max + xy_step,
-        xy_step
+    center: dict = field(
+        default_factory=dict
     )
 
-    X, Y = np.meshgrid(
-        xy,
-        xy
+    # --------------------------------------------------------
+    # Symmetry
+    # --------------------------------------------------------
+
+    symmetry: dict = field(
+        default_factory=dict
     )
 
-    R = np.sqrt(
-        X**2 + Y**2
+    # --------------------------------------------------------
+    # Abel methods
+    # --------------------------------------------------------
+
+    abel: dict = field(
+        default_factory=dict
     )
 
-    intensity_xy = np.interp(
-        R.ravel(),
-        r,
-        profile,
-        left=profile[0],
-        right=0.0
-    ).reshape(
-        R.shape
+    # --------------------------------------------------------
+    # Longitudinal profiles
+    # --------------------------------------------------------
+
+    profiles_basex: list = field(
+        default_factory=list
     )
 
-    # За пределами максимально восстановленного радиуса
-    # данных нет — их не надо искусственно продолжать.
-    intensity_xy[R > r[-1]] = np.nan
-
-    return X, Y, intensity_xy
-
-# ===== CELL [50] (code) =====
-from matplotlib import colors
-from matplotlib.cm import ScalarMappable
-from matplotlib.ticker import MultipleLocator
-
-
-def plot_3d_beam_cross_section(
-    abel_image,
-    z_index,
-    center_column=None,
-    xy_step=0.5,
-    radius_max=40.0,
-    elev=35,
-    azim=-60,
-    clip_negative_for_display=True,
-    color_mode="linear",
-    color_gamma=0.7,
-    major_tick=10.0,
-    minor_tick=5.0,
-    calibration=None,
-    display_unit=None,
-    figsize=(11, 8),
-    dpi=180
-):
-    """3D поперечный профиль с симметризацией левой/правой стороны.
-
-    Физический принцип: Abel предполагает осесимметрию, поэтому для 3D
-    используется I(r) = (I_left(r) + I_right(r))/2. Одновременно вычисляется
-    side_consistency как независимая QA-метрика. xy_step относится только к
-    интерполяции display-сетки и НЕ повышает физическое разрешение.
-    """
-    r, profile, side_consistency = extract_symmetric_radial_profile(
-        abel_image, z_index=z_index, center_column=center_column, max_radius=radius_max
-    )
-    radius_max = float(r[-1])
-
-    X, Y, intensity_xy = radial_profile_to_xy_surface(
-        r, profile, xy_step=xy_step, radius_max=radius_max
+    profiles_hansenlaw: list = field(
+        default_factory=list
     )
 
-    intensity_display = np.clip(intensity_xy, 0, None) if clip_negative_for_display else intensity_xy.copy()
-    finite_mask = np.isfinite(intensity_display)
-    finite_values = intensity_display[finite_mask]
-    if finite_values.size == 0:
-        raise ValueError("В 3D-срезе нет конечных значений.")
-    vmax = float(np.max(finite_values))
-    if vmax <= 0:
-        raise ValueError("Максимальная интенсивность <= 0.")
+    # --------------------------------------------------------
+    # Validation
+    # --------------------------------------------------------
 
-    cmap = plt.get_cmap("viridis")
-    if color_mode == "linear":
-        norm = colors.Normalize(vmin=0.0, vmax=vmax)
-    elif color_mode == "power":
-        if color_gamma <= 0:
-            raise ValueError("color_gamma должен быть > 0.")
-        norm = colors.PowerNorm(gamma=color_gamma, vmin=0.0, vmax=vmax)
-    else:
-        raise ValueError("color_mode должен быть 'linear' или 'power'.")
-
-    safe_intensity = np.nan_to_num(intensity_display, nan=0.0)
-    facecolors = cmap(norm(safe_intensity))
-
-    fig = plt.figure(figsize=figsize, dpi=dpi)
-    ax = fig.add_subplot(111, projection="3d")
-    ax.plot_surface(
-        X, Y, intensity_display,
-        facecolors=facecolors,
-        rcount=X.shape[0], ccount=X.shape[1],
-        linewidth=0, antialiased=True, shade=False
+    validation: dict = field(
+        default_factory=dict
     )
 
+    # --------------------------------------------------------
+    # Waist
+    # --------------------------------------------------------
+
+    waist: dict = field(
+        default_factory=dict
+    )
+
+    # --------------------------------------------------------
+    # Propagation
+    # --------------------------------------------------------
+
+    propagation: dict = field(
+        default_factory=dict
+    )
+
+    # --------------------------------------------------------
+    # Configuration
+    # --------------------------------------------------------
+
+    config: dict = field(
+        default_factory=dict
+    )
+
+    psf_profiles_basex: list = field(default_factory=list)
+    psf_profiles_hansenlaw: list = field(default_factory=list)
+    metrology: dict = field(default_factory=dict)
+    camera: dict = field(default_factory=dict)
+
+    audit: dict = field(
+        default_factory=dict
+    )
+
+# ===== CELL [71] (code) =====
+def scientific_audit_report(alignment_info, symmetry_metrics, abel_method_comparison_full,
+                           propagation_basex_full, propagation_hl_full,
+                           waist_basex_full, waist_hl_full,
+                           profile_results_basex, profile_results_hl,
+                           calibration_info=None, saturation_info=None,
+                           uncertainty_budget=None, side_consistency_3d=None):
+    """Сводный QA/QC отчёт научного анализа + метрология."""
+    print("=== SCIENTIFIC QA / QC REPORT ===")
+    axis_rms=float(alignment_info.get("axis_rms_error",np.nan))
+    corr=float(symmetry_metrics.get("correlation",np.nan))
+    asym=float(symmetry_metrics.get("normalized_rms",np.nan))
+    mean_diff=float(abel_method_comparison_full.get("mean_difference_percent",np.nan)/100.0)
+    max_diff=float(abel_method_comparison_full.get("max_difference_percent",np.nan)/100.0)
+    print(f"[ALIGNMENT] RMS axis error = {axis_rms:.4g} px")
+    print(f"[SYMMETRY] correlation = {corr:.6f}; normalized RMS asymmetry = {asym:.6f}")
+    print(f"[ABEL] BASEX vs Hansen-Law: mean = {mean_diff:.3%}; max = {max_diff:.3%}")
+    print(f"[GAUSSIAN] BASEX successful fits = {sum(x.get('success',False) for x in profile_results_basex)}/{len(profile_results_basex)}")
+    print(f"[GAUSSIAN] Hansen-Law successful fits = {sum(x.get('success',False) for x in profile_results_hl)}/{len(profile_results_hl)}")
+    print(f"[PROPAGATION/BASEX] R²={propagation_basex_full['r_squared']:.4f}; ΔBIC={propagation_basex_full['delta_bic']:.4f}; z0_inside={propagation_basex_full['z0_inside_data']}")
+    print(f"[PROPAGATION/HL] R²={propagation_hl_full['r_squared']:.4f}; ΔBIC={propagation_hl_full['delta_bic']:.4f}; z0_inside={propagation_hl_full['z0_inside_data']}")
+    dz=abs(float(waist_basex_full['z_min_observed'])-float(waist_hl_full['z_min_observed']))
+    print(f"[OBSERVED WAIST] BASEX z_min={waist_basex_full['z_min_observed']:.3f} px; HL z_min={waist_hl_full['z_min_observed']:.3f} px; |Δz|={dz:.3f} px")
+    if calibration_info:
+        print(f"[CALIBRATION] enabled={calibration_info['enabled']}; scale={calibration_info['pixel_size_um']} µm/px; display={calibration_info['display_unit']}")
+    if saturation_info:
+        print(f"[SATURATION] status={saturation_info['status']}; saturated_fraction={saturation_info['saturated_fraction']:.3%}")
+    if side_consistency_3d:
+        print(f"[3D POST-SYMMETRIZATION CHECK] RMS={side_consistency_3d['normalized_rms_difference']:.3%}; corr={side_consistency_3d['correlation']:.6f}")
+    if uncertainty_budget and uncertainty_budget.get('status') == 'available':
+        print(f"[UNCERTAINTY] sensitivity envelope ×2 = ±{uncertainty_budget['absolute_sensitivity_envelope_k2']:.5g} in the reference width")
+    print("Sensitivity — это оценка устойчивости, а не автоматический выбор параметра.")
+    print("Propagation z0 и observed z_min — разные физические величины и не должны называться одинаково в отчёте.")
+    return {"axis_rms_px":axis_rms,"symmetry_correlation":corr,"symmetry_rms_asymmetry":asym,
+            "method_mean_relative_difference":mean_diff,"method_max_relative_difference":max_diff,
+            "waist_z_difference_px":dz,
+            "calibration":calibration_info,"saturation":saturation_info,
+            "uncertainty_budget":uncertainty_budget,"side_consistency_3d":side_consistency_3d}
+
+scientific_audit=scientific_audit_report(
+    alignment_info, symmetry_metrics, abel_method_comparison_full,
+    propagation_basex_full, propagation_hl_full,
+    waist_basex_full, waist_hl_full,
+    profiles_basex_full, profiles_hl_full,
+    calibration_info=calibration_info,
+    saturation_info=saturation_info,
+    uncertainty_budget=uncertainty_budget,
+    side_consistency_3d=side_consistency_3d
+)
+analysis_result.audit = scientific_audit
+
+
+# ===== CELL [72] (code) =====
+def profiles_to_dataframe(profile_results, calibration=None):
+    """Преобразует результаты Gaussian fit в pandas.DataFrame с pixel + physical units."""
+    rows=[]
     scale_um = resolve_pixel_scale_um(calibration) if calibration else None
-    unit = display_unit or (calibration or {}).get("display_unit", "px")
-    if scale_um is not None:
-        xy_display = X * scale_um / LENGTH_UNITS_UM[unit]
-        y_display = Y * scale_um / LENGTH_UNITS_UM[unit]
-        ax.set_xlabel(f"x, {unit}")
-        ax.set_ylabel(f"y, {unit}")
-        lim_display = radius_max * scale_um / LENGTH_UNITS_UM[unit]
-        ax.set_xlim(-lim_display, lim_display)
-        ax.set_ylim(-lim_display, lim_display)
-        ax.xaxis.set_major_locator(MultipleLocator(major_tick * scale_um / LENGTH_UNITS_UM[unit]))
-        ax.yaxis.set_major_locator(MultipleLocator(major_tick * scale_um / LENGTH_UNITS_UM[unit]))
-        ax.xaxis.set_minor_locator(MultipleLocator(minor_tick * scale_um / LENGTH_UNITS_UM[unit]))
-        ax.yaxis.set_minor_locator(MultipleLocator(minor_tick * scale_um / LENGTH_UNITS_UM[unit]))
-        z_label = str(z_index)
-    else:
-        ax.set_xlabel("x, px")
-        ax.set_ylabel("y, px")
-        ax.set_xlim(-radius_max, radius_max)
-        ax.set_ylim(-radius_max, radius_max)
-        ax.xaxis.set_major_locator(MultipleLocator(major_tick))
-        ax.yaxis.set_major_locator(MultipleLocator(major_tick))
-        ax.xaxis.set_minor_locator(MultipleLocator(minor_tick))
-        ax.yaxis.set_minor_locator(MultipleLocator(minor_tick))
-        z_label = f"{z_index} px"
-
-    ax.set_zlabel("Intensity / relative signal")
-    ax.grid(True)
-    ax.set_title(
-        f"3D поперечный профиль, z = {z_label}\n"
-        f"Post-symmetrization check: RMS={side_consistency['normalized_rms_difference']:.3%}, "
-        f"corr={side_consistency['correlation']:.5f}"
-    )
-    ax.view_init(elev=elev, azim=azim)
-    ax.set_box_aspect((1, 1, 0.65))
-
-    scalar_mappable = ScalarMappable(norm=norm, cmap=cmap)
-    scalar_mappable.set_array(finite_values)
-    fig.colorbar(scalar_mappable, ax=ax, shrink=0.65, pad=0.10, label="Intensity")
-    plt.tight_layout()
-    plt.show()
-    return X, Y, intensity_xy, side_consistency
-
-
-# ===== CELL [53] (code) =====
-def interactive_3d_cross_section(
-    abel_image,
-    center_column=None,
-    profile_results=None,
-    xy_step=0.5,
-    radius_max=40.0,
-    color_mode="linear",
-    color_gamma=0.7,
-    calibration=None,
-    display_unit=None
-):
-    """Интерактивный просмотр 3D. Требует optional ipywidgets."""
-    if not globals().get("IPYWIDGETS_AVAILABLE", False):
-        raise RuntimeError(
-            "Интерактивный 3D-слайдер требует ipywidgets. "
-            "Основной научный расчёт и статический 3D-график доступны без него."
-        )
-
-    abel_image = np.asarray(abel_image, dtype=np.float64)
-    if abel_image.ndim != 2:
-        raise ValueError("abel_image должен быть 2D.")
-
-    h = abel_image.shape[0]
-    slider = widgets.IntSlider(
-        value=h // 2, min=0, max=h - 1, step=1, description="z:",
-        continuous_update=False, style={"description_width": "initial"}
-    )
-    info_label = widgets.HTML()
-    output = widgets.Output()
-    result_map = {int(item["z_index"]): item for item in profile_results} if profile_results is not None else {}
-
-    def update(change=None):
-        z_index = int(slider.value)
-        try:
-            r, profile, side_consistency = extract_symmetric_radial_profile(
-                abel_image, z_index=z_index, center_column=center_column, max_radius=radius_max
-            )
-            positive_profile = np.clip(profile, 0, None)
-            text = f"<b>z = {z_index} px</b> | I<sub>max</sub> = {float(np.max(positive_profile)):.5g}"
-            if z_index in result_map and result_map[z_index].get("success", False):
-                item = result_map[z_index]
-                text += f" | w = {item['beam_radius_w']:.3f} px | 2w = {item['beam_diameter_2w']:.3f} px | R²<sub>full</sub> = {item['r_squared_full']:.5f}"
-            elif z_index in result_map:
-                text += " | Gaussian fit: неуспешен"
-            text += f" | left/right RMS = {side_consistency['normalized_rms_difference']:.2%} | corr = {side_consistency['correlation']:.5f}"
-            info_label.value = text
-            with output:
-                clear_output(wait=True)
-                plot_3d_beam_cross_section(
-                    abel_image, z_index=z_index, center_column=center_column,
-                    xy_step=xy_step, radius_max=radius_max, color_mode=color_mode,
-                    color_gamma=color_gamma, major_tick=10.0, minor_tick=5.0,
-                    calibration=calibration, display_unit=display_unit
-                )
-        except Exception as exc:
-            info_label.value = f"<b>Ошибка:</b> {exc}"
-            with output:
-                clear_output(wait=True)
-                print(repr(exc))
-
-    slider.observe(update, names="value")
-    display(slider, info_label, output)
-    update()
+    unit = (calibration or {}).get("display_unit", "px") if calibration else "px"
+    for item in profile_results:
+        row = {
+            "z_px": item.get("z_index",np.nan), "success":item.get("success",False),
+            "amplitude":item.get("amplitude",np.nan), "peak_intensity":item.get("peak_intensity",np.nan),
+            "baseline":item.get("baseline",np.nan), "r0_px":item.get("r0",np.nan),
+            "sigma_px":item.get("sigma",np.nan), "w_px":item.get("beam_radius_w",np.nan),
+            "D_1e_px":item.get("diameter_1e",np.nan), "D_1e2_px":item.get("diameter_1e2",np.nan),
+            "FWHM_px":item.get("fwhm",np.nan), "R2_signal":item.get("r_squared_signal",np.nan),
+            "R2_full":item.get("r_squared_full",np.nan), "NRMSE_full":item.get("nrmse_full",np.nan),
+            "max_abs_residual":item.get("max_abs_residual_full",np.nan),
+            "peak_intensity_W_cm2": (radiometric_convert_intensity(item.get("peak_intensity",np.nan), ANALYSIS_CONFIG["radiometry"]) if ANALYSIS_CONFIG["radiometry"].get("enabled", False) else np.nan),
+        }
+        if scale_um is not None:
+            factor = scale_um / LENGTH_UNITS_UM[unit]
+            row[f"z_{unit}"] = row["z_px"] * factor
+            row[f"r0_{unit}"] = row["r0_px"] * factor
+            row[f"sigma_{unit}"] = row["sigma_px"] * factor
+            row[f"w_{unit}"] = row["w_px"] * factor
+            row[f"D_1e_{unit}"] = row["D_1e_px"] * factor
+            row[f"D_1e2_{unit}"] = row["D_1e2_px"] * factor
+            row[f"FWHM_{unit}"] = row["FWHM_px"] * factor
+            row[f"w_psf_corrected_{unit}"] = item.get("beam_radius_w_psf_corrected",np.nan) * factor
+            row[f"D_1e2_psf_corrected_{unit}"] = item.get("diameter_1e2_psf_corrected",np.nan) * factor
+        rows.append(row)
+    return pd.DataFrame(rows)
 

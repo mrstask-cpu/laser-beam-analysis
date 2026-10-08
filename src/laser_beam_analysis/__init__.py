@@ -53,6 +53,9 @@ from .visualization import (
     plot_3d_beam_cross_section,
     interactive_3d_cross_section,
 )
+from .results import BeamAnalysisResult
+from .validation import scientific_audit_report
+from .reporting import profiles_to_dataframe
 
 __all__ = [
     "load_image",
@@ -90,4 +93,7 @@ __all__ = [
     "plot_beam_parameters",
     "plot_3d_beam_cross_section",
     "interactive_3d_cross_section",
+    "BeamAnalysisResult",
+    "scientific_audit_report",
+    "profiles_to_dataframe",
 ]
