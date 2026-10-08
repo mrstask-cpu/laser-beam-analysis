@@ -31,6 +31,11 @@ from .profiles import (
     extract_symmetric_radial_profile,
     fit_gaussian_radial_profile,
 )
+from .z_scan import (
+    make_z_sampling,
+    get_z_positions,
+    analyze_all_z_profiles,
+)
 
 __all__ = [
     "load_image",
@@ -54,4 +59,7 @@ __all__ = [
     "extract_radial_profile",
     "extract_symmetric_radial_profile",
     "fit_gaussian_radial_profile",
+    "make_z_sampling",
+    "get_z_positions",
+    "analyze_all_z_profiles",
 ]

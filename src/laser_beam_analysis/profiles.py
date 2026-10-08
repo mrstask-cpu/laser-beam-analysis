@@ -53,8 +53,8 @@ def extract_radial_profile(
             one-sided profile (diagnostic mode).
 
     Returns:
-        (r, profile) when symmetric=False.
-        (r, profile, diagnostics) when symmetric=True.
+        Always (r, profile). If you need the left/right side diagnostics,
+        call extract_symmetric_radial_profile directly.
     """
     abel_image = _require_finite_2d(abel_image, "abel_image")
     h, w = abel_image.shape
@@ -68,7 +68,7 @@ def extract_radial_profile(
             z_index=z_index,
             center_column=center_column,
             max_radius=max_radius,
-        )
+        )[:2]
 
     if center_column is None:
         if w % 2 == 0:

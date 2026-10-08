@@ -26,11 +26,15 @@ def _gaussian_1d(r, sigma=15.0):
 
 # ---------------------------------------------------------------- extraction
 
-def test_extract_symmetric_returns_three_items():
+def test_extract_symmetric_returns_two_items():
+    """extract_radial_profile (symmetric=True) returns only (r, profile).
+
+    Diagnostics are available from extract_symmetric_radial_profile directly.
+    """
     img, _ = _gaussian_2d()
     out = extract_radial_profile(img, z_index=60, symmetric=True)
-    assert len(out) == 3
-    r, profile, diag = out
+    assert len(out) == 2
+    r, profile = out
     assert r.ndim == 1
     assert profile.ndim == 1
     assert r.size == profile.size
