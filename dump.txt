@@ -1,281 +1,186 @@
-# ===== CELL [33] (code) =====
-def make_z_sampling(
-    n_z,
-    n_points=61,
-    margin=10
-):
-    """
-    Создаёт равномерную выборку продольных координат.
-
-    Parameters
-    ----------
-    n_z : int
-        Полное количество доступных продольных строк.
-
-    n_points : int
-        Количество выбираемых z-сечений.
-
-    margin : int
-        Сколько строк исключить с каждого края.
-
-    Returns
-    -------
-    np.ndarray
-        Отсортированные уникальные z-индексы.
-    """
-
-    n_z = int(n_z)
-    n_points = int(n_points)
-    margin = int(margin)
-
-    if n_z < 3:
-        raise ValueError(
-            "n_z должен быть >= 3."
-        )
-
-    if n_points < 2:
-        raise ValueError(
-            "n_points должен быть >= 2."
-        )
-
-    if margin < 0:
-        raise ValueError(
-            "margin не может быть отрицательным."
-        )
-
-    first = margin
-    last = n_z - 1 - margin
-
-    if first > last:
-        raise ValueError(
-            f"Слишком большой margin={margin}. "
-            f"Для изображения с n_z={n_z} "
-            f"допустимый диапазон margin: "
-            f"0...{(n_z - 1) // 2}."
-        )
-
-    available_positions = (
-        last - first + 1
-    )
-
-    if n_points > available_positions:
-        raise ValueError(
-            f"Нельзя выбрать {n_points} уникальных "
-            f"z-позиций из {available_positions} доступных. "
-            f"Уменьшите n_points или margin."
-        )
-
-    positions = np.rint(
-        np.linspace(
-            first,
-            last,
-            n_points
-        )
-    ).astype(int)
-
-    positions = np.unique(
-        positions
-    )
-
-    if len(positions) != n_points:
-        raise RuntimeError(
-            "При округлении координат появились дубли. "
-            "Уменьшите n_points."
-        )
-
-    return positions
-
-
-def get_z_positions(
-    n_z,
-    mode="dense",
-    n_points=61,
-    margin=10
-):
-    """
-    Унифицированный выбор продольных координат.
-
-    mode:
-        "diagnostic" -> 15 точек
-        "dense"      -> n_points
-        "full"       -> все допустимые точки
-    """
-
-    mode = str(mode).lower()
-
-    if mode == "diagnostic":
-
-        return make_z_sampling(
-            n_z=n_z,
-            n_points=min(15, n_z - 2 * margin),
-            margin=margin
-        )
-
-    elif mode == "dense":
-
-        return make_z_sampling(
-            n_z=n_z,
-            n_points=n_points,
-            margin=margin
-        )
-
-    elif mode == "full":
-
-        first = int(margin)
-        last = int(n_z - 1 - margin)
-
-        if first > last:
-            raise ValueError(
-                f"margin={margin} слишком велик "
-                f"для n_z={n_z}."
-            )
-
-        return np.arange(
-            first,
-            last + 1,
-            dtype=int
-        )
-
-    else:
-
-        raise ValueError(
-            "Неизвестный режим z sampling. "
-            "Используйте: "
-            "'diagnostic', 'dense' или 'full'."
-        )
-
-# ===== CELL [35] (code) =====
-def analyze_all_z_profiles(
-    abel_image,
-    z_positions,
-    fit_fraction=0.05,
-    robust=True,
-    r0_max=3.0
-):
-    """
-    Анализирует Gaussian-профиль для каждой z-позиции.
-
-    Неудачные fits не останавливают весь анализ.
-    Для них численные параметры записываются как NaN.
-    """
-
-    z_positions = np.asarray(
-        z_positions,
-        dtype=int
-    )
-
-    results = []
-
-    metric_names = [
-        "amplitude",
-        "peak_intensity",
-        "r0",
-        "sigma",
-        "baseline",
-
-        "radius_1e",
-        "radius_1e2",
-
-        "diameter_1e",
-        "diameter_1e2",
-
-        "beam_radius_w",
-        "beam_diameter_2w",
-
-        "fwhm",
-
-        "r_squared",
-        "r_squared_signal",
-        "r_squared_full",
-
-        "rmse",
-        "rmse_signal",
-        "rmse_full",
-
-        "nrmse_signal",
-        "nrmse_full",
-
-        "max_abs_residual_signal",
-        "max_abs_residual_full"
-    ]
-
-    for z_index in z_positions:
-
-        result = {
-            "z_index": int(z_index),
-            "success": False,
-            "error": None
-        }
-
-        # Заполняем числовые поля NaN,
-        # чтобы последующие графики были устойчивыми.
-        for name in metric_names:
-            result[name] = np.nan
-
+# ===== CELL [58] (code) =====
+def find_beam_waist(profile_results, calibration=None):
+    """Определяет наблюдаемый минимум w(z), отдельно от model-fit propagation z0."""
+    valid = sorted([x for x in profile_results if x.get("success", False) and np.isfinite(x.get("beam_radius_w", np.nan))], key=lambda x:x["z_index"])
+    if len(valid) < 3:
+        raise RuntimeError("Недостаточно успешных сечений для поиска waist.")
+    z=np.array([x["z_index"] for x in valid],float); w=np.array([x["beam_radius_w"] for x in valid],float)
+    i=int(np.argmin(w)); z0=float(z[i]); w0=float(w[i]); boundary=i in (0,len(w)-1)
+    zsub=np.nan; wsub=np.nan; sub=False
+    if not boundary:
+        zl=z[i-1:i+2]; wl=w[i-1:i+2]
         try:
+            a,b,c=np.polyfit(zl,wl,2)
+            if np.isfinite(a) and a>0:
+                zv=-b/(2*a)
+                if zl[0] <= zv <= zl[-1]:
+                    zsub=float(zv); wsub=float(a*zv*zv+b*zv+c); sub=np.isfinite(wsub)
+        except Exception:
+            pass
+    scale_um=resolve_pixel_scale_um(calibration) if calibration else None; unit=(calibration or {}).get("display_unit","px")
+    if scale_um is None: zd,wd,zsd,wsd=z0,w0,zsub,wsub; suf='px'
+    else: zd,wd=um_to_unit(z0*scale_um,unit),um_to_unit(w0*scale_um,unit); zsd=um_to_unit(zsub*scale_um,unit) if np.isfinite(zsub) else np.nan; wsd=um_to_unit(wsub*scale_um,unit) if np.isfinite(wsub) else np.nan; suf=unit
+    print("=== Observed beam-width minimum ==="); print(f"z_min_observed = {zd:.6g} {suf}"); print(f"w_min_observed = {wd:.6g} {suf}")
+    if sub: print(f"z_min_observed_subpixel ≈ {zsd:.6g} {suf}"); print(f"w_min_observed_subpixel ≈ {wsd:.6g} {suf}")
+    print("Это наблюдаемый минимум w(z); model-fitted propagation z0 — отдельный параметр.")
+    if boundary: print("WARNING: минимум находится на границе диапазона — истинный waist может быть вне наблюдения.")
+    return {"z0":z0,"w0":w0,"z_min_observed":z0,"w_min_observed":w0,"z_min_observed_subpixel":zsub,"w_min_observed_subpixel":wsub,"boundary_limited":boundary,"subpixel_available":sub,"definition":"discrete observed minimum of w(z); optional local quadratic refinement","z":z,"w":w}
 
-            r, profile = (
-                extract_radial_profile(
-                    abel_image,
-                    z_index=z_index
-                )
-            )
 
-            fit_result = (
-                fit_gaussian_radial_profile(
-                    r,
-                    profile,
-                    fit_fraction=fit_fraction,
-                    robust=robust,
-                    r0_max=r0_max
-                )
-            )
+# ===== CELL [61] (code) =====
+from scipy.optimize import curve_fit
 
-            result.update(
-                fit_result
-            )
 
-            result["success"] = True
+def gaussian_beam_width_model(z, w0, z0, zR):
+    return w0 * np.sqrt(1.0 + ((z - z0) / zR) ** 2)
 
-        except Exception as exc:
 
-            result["error"] = str(exc)
+def fit_gaussian_beam_propagation(profile_results, pixel_size=None, robust=True, display_unit=None):
+    """Gaussian-beam propagation fit with explicit identifiability diagnostics.
 
-            print(
-                f"Предупреждение: "
-                f"z={z_index}: {exc}"
-            )
+    Здесь z0 — *модельно оцененное положение waist*. Оно может лежать вне
+    экспериментального диапазона: это не ошибка самой математики, а экстраполяция
+    модели. Если z0 вне диапазона и/или zR >> длины измерений, положение waist
+    считается плохо идентифицируемым и не должно интерпретироваться как прямое
+    измерение.
+    """
+    valid = [x for x in profile_results if x.get("success", False) and np.isfinite(x.get("beam_radius_w", np.nan))]
+    if len(valid) < 10:
+        raise RuntimeError("Недостаточно точек для Gaussian-beam fit.")
 
-        results.append(
-            result
+    z = np.array([x["z_index"] for x in valid], dtype=float)
+    w = np.array([x["beam_radius_w"] for x in valid], dtype=float)
+    if pixel_size is not None:
+        if pixel_size <= 0:
+            raise ValueError("pixel_size должен быть > 0.")
+        z_fit = z * pixel_size
+        w_fit = w * pixel_size
+    else:
+        z_fit, w_fit = z, w
+
+    z_min, z_max = float(z_fit.min()), float(z_fit.max())
+    z_span = z_max - z_min
+    if z_span <= 0:
+        raise RuntimeError("Нет продольного диапазона для propagation fit.")
+
+    k = int(np.argmin(w_fit))
+    p0 = [max(float(w_fit[k]), np.finfo(float).eps), float(z_fit[k]), max(z_span, 1.0)]
+    lower = [np.finfo(float).eps, z_min - 20.0 * z_span, np.finfo(float).eps]
+    upper = [np.inf, z_max + 20.0 * z_span, 1e6 * max(z_span, 1.0)]
+
+    if robust:
+        def residual_func(p):
+            return gaussian_beam_width_model(z_fit, *p) - w_fit
+        lsq = least_squares(
+            residual_func, p0, bounds=(lower, upper), loss="soft_l1",
+            f_scale=max(np.std(w_fit), 1e-6), max_nfev=100000
         )
-
-    valid_count = sum(
-        item["success"]
-        for item in results
-    )
-
-    failed_count = (
-        len(results) -
-        valid_count
-    )
-
-    print()
-    print("=== BATCH GAUSSIAN ANALYSIS ===")
-    print(
-        f"Всего сечений:       {len(results)}"
-    )
-    print(
-        f"Успешных fits:       {valid_count}"
-    )
-    print(
-        f"Неудачных fits:      {failed_count}"
-    )
-
-    if valid_count == 0:
-
-        raise RuntimeError(
-            "Ни одного успешного Gaussian fit."
+        popt = lsq.x
+        fitted_w = gaussian_beam_width_model(z_fit, *popt)
+        try:
+            J = lsq.jac
+            dof = max(len(w_fit) - 3, 1)
+            s2 = max(2.0 * float(lsq.cost) / dof, np.finfo(float).eps)
+            pcov = s2 * np.linalg.pinv(J.T @ J)
+        except Exception:
+            pcov = np.full((3, 3), np.nan)
+    else:
+        popt, pcov = curve_fit(
+            gaussian_beam_width_model, z_fit, w_fit, p0=p0,
+            bounds=(lower, upper), maxfev=100000
         )
+        fitted_w = gaussian_beam_width_model(z_fit, *popt)
 
-    return results
+    w0, z0, zR = map(float, popt)
+    residual = w_fit - fitted_w
+    sse_g = float(np.sum(residual**2))
+    sst = float(np.sum((w_fit - w_fit.mean())**2))
+    r2 = 1.0 - sse_g / sst if sst > 0 else np.nan
+    rmse = float(np.sqrt(np.mean(residual**2)))
+
+    w_const = np.full_like(w_fit, w_fit.mean())
+    sse_c = float(np.sum((w_fit - w_const)**2))
+    n = len(w_fit)
+    bic_g = n * np.log(max(sse_g / n, np.finfo(float).eps)) + 3 * np.log(n)
+    bic_c = n * np.log(max(sse_c / n, np.finfo(float).eps)) + np.log(n)
+    delta_bic = float(bic_c - bic_g)
+    relative_variation = float((w_fit.max() - w_fit.min()) / w_fit.mean())
+    warnings_list_pre = []
+    if relative_variation < 1e-3:
+        warnings_list_pre.append("Ширина практически постоянна (<0.1%); параметры z0 и zR практически неидентифицируемы.")
+
+    if np.all(np.isfinite(pcov)):
+        parameter_std = np.sqrt(np.maximum(np.diag(pcov), 0.0))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            correlation_matrix = pcov / np.outer(parameter_std, parameter_std)
+    else:
+        parameter_std = np.full(3, np.nan)
+        correlation_matrix = np.full((3, 3), np.nan)
+
+    zR_relative_error = parameter_std[2] / zR if np.isfinite(parameter_std[2]) and zR > 0 else np.nan
+    zR_to_span = zR / z_span if z_span > 0 else np.inf
+    z0_inside = bool(z_min <= z0 <= z_max)
+
+    warnings_list = list(warnings_list_pre)
+    if not np.isfinite(r2) or r2 < 0.8:
+        warnings_list.append("Gaussian propagation model объясняет менее 80% вариации w(z).")
+    if not z0_inside:
+        warnings_list.append("Оцененный waist z0 находится за пределами исследованного диапазона: это экстраполяция, а не прямое наблюдение.")
+    if delta_bic < 6:
+        warnings_list.append("Gaussian propagation model не даёт убедимого преимущества над constant-width.")
+    if zR_to_span > 20:
+        warnings_list.append("Rayleigh range значительно больше исследованного диапазона; zR плохо идентифицируется.")
+    if np.isfinite(zR_relative_error) and zR_relative_error > 0.5:
+        warnings_list.append("zR определяется с высокой относительной неопределённостью.")
+    if relative_variation < 0.02:
+        warnings_list.append("Ширина пучка меняется менее чем на 2% по исследованному диапазону.")
+
+    print("=== Gaussian beam propagation fit ===")
+    print(f"w0 = {w0:.6g}; z0 = {z0:.6g}; zR = {zR:.6g}")
+    print(f"R² = {r2:.6f}; RMSE = {rmse:.6g}; ΔBIC = {delta_bic:.6g}")
+    print(f"Relative width variation = {relative_variation:.3%}")
+    print(f"Waist inside data range: {z0_inside}")
+    if np.all(np.isfinite(parameter_std)):
+        print(f"std(w0) = {parameter_std[0]:.6g}; std(z0) = {parameter_std[1]:.6g}; std(zR) = {parameter_std[2]:.6g}")
+    if warnings_list:
+        print("\n=== WARNING ===")
+        for msg in warnings_list:
+            print("•", msg)
+
+    plt.figure(figsize=(14, 7), dpi=180)
+    plt.plot(z_fit, w_fit, linewidth=1.2, label="Reconstructed w(z)")
+    zd = np.linspace(z_min, z_max, 1000)
+    plt.plot(zd, gaussian_beam_width_model(zd, *popt), linewidth=2.5, label="Gaussian beam model")
+    if z0_inside:
+        plt.axvline(z0, linestyle="--", label="Fitted waist position z0")
+    else:
+        edge = z_min if z0 < z_min else z_max
+        plt.axvline(edge, linestyle=":", linewidth=1.5, label="Data boundary")
+        direction = "<" if z0 < z_min else ">"
+        plt.annotate(
+            f"Fitted z0 {direction} data range\n(z0={z0:.3g}, extrapolated)",
+            xy=(edge, np.interp(edge, zd, gaussian_beam_width_model(zd, *popt))),
+            xytext=(0.03, 0.90), textcoords="axes fraction",
+            arrowprops={"arrowstyle": "->"}
+        )
+    plt.xlabel(f"z [{display_unit}]" if display_unit else "z [px]")
+    plt.ylabel(f"Beam radius w [{display_unit}]" if display_unit else "Beam radius w [px]")
+    plt.title("Gaussian beam propagation")
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "success": True, "w0": w0, "z0": z0, "zR": zR,
+        "parameter_std": parameter_std, "covariance": pcov,
+        "correlation_matrix": correlation_matrix, "r_squared": r2,
+        "rmse": rmse, "sse_gaussian": sse_g, "sse_constant": sse_c,
+        "bic_gaussian": bic_g, "bic_constant": bic_c, "delta_bic": delta_bic,
+        "relative_variation": relative_variation, "zR_relative_error": zR_relative_error,
+        "zR_to_span": zR_to_span, "z0_inside_data": z0_inside,
+        "warnings": warnings_list, "z": z_fit, "w": w_fit,
+        "fitted_w": fitted_w, "residual": residual,
+        "definition": "model-fitted Gaussian propagation waist",
+    }
+

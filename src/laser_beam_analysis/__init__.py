@@ -36,6 +36,11 @@ from .z_scan import (
     get_z_positions,
     analyze_all_z_profiles,
 )
+from .propagation import (
+    find_beam_waist,
+    gaussian_beam_width_model,
+    fit_gaussian_beam_propagation,
+)
 
 __all__ = [
     "load_image",
@@ -62,4 +67,7 @@ __all__ = [
     "make_z_sampling",
     "get_z_positions",
     "analyze_all_z_profiles",
+    "find_beam_waist",
+    "gaussian_beam_width_model",
+    "fit_gaussian_beam_propagation",
 ]
