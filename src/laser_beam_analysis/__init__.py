@@ -19,6 +19,7 @@ from .camera import (
 )
 from .alignment import align_laser_beam
 from .preprocessing import preprocess_background_and_noise
+from .abel_center import find_abel_center, compare_abel_center_methods
 
 __all__ = [
     "load_image",
@@ -33,4 +34,6 @@ __all__ = [
     "acquisition_saturation_diagnostics",
     "align_laser_beam",
     "preprocess_background_and_noise",
+    "find_abel_center",
+    "compare_abel_center_methods",
 ]

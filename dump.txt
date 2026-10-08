@@ -1,45 +1,38 @@
-# ===== CELL [7] (code) =====
-def preprocess_background_and_noise(
+# ===== CELL [12] (code) =====
+def find_abel_center(
     img_array,
-    bg_corner_size=40,
-    sigma=1.5,
+    slice_width=10,
     debug_plot=True
 ):
     """
-    Научная предобработка изображения:
+    Определяет точную вертикальную ось симметрии изображения
+    для последующего Abel-преобразования.
 
-        1. оценка постоянного фона;
-        2. вычитание фона;
-        3. Gaussian smoothing;
-        4. оценка остаточного шума.
-
-    ВАЖНО:
-    отрицательные значения после вычитания фона НЕ обрезаются.
-    Они являются допустимым представлением шумового отклонения.
-
-    Отрицательные значения можно обрезать только при визуализации
-    или при формировании пользовательского display-массива.
+    Поиск выполняется через PyAbel методом сравнения
+    противоположных половин изображения.
 
     Parameters
     ----------
     img_array : np.ndarray
-        Геометрически выровненное изображение.
+        Предварительно обработанное и геометрически
+        выровненное изображение.
 
-    bg_corner_size : int
-        Размер области в каждом углу для оценки фона.
-
-    sigma : float
-        Sigma Gaussian filter в пикселях.
+    slice_width : int
+        Ширина области суммирования около оси.
 
     debug_plot : bool
         Показывать диагностические графики.
 
     Returns
     -------
-    filtered_image : np.ndarray
+    center_xy : tuple
+        Координаты центра (y, x).
 
-    info : dict
+    center_x : float
+        Точная координата Abel-оси по X.
     """
+
+    import abel
 
     img_array = np.asarray(
         img_array,
@@ -48,334 +41,178 @@ def preprocess_background_and_noise(
 
     if img_array.ndim != 2:
         raise ValueError(
-            "img_array должен быть двумерным."
+            "Для поиска центра требуется 2D-массив."
         )
 
     if not np.all(np.isfinite(img_array)):
         raise ValueError(
-            "img_array содержит NaN или inf."
+            "Изображение содержит NaN или inf."
         )
 
-    if bg_corner_size <= 0:
+    if slice_width <= 0:
         raise ValueError(
-            "bg_corner_size должен быть > 0."
+            "slice_width должен быть > 0."
         )
 
-    if sigma < 0:
-        raise ValueError(
-            "sigma не может быть отрицательной."
-        )
-
-    h, w = img_array.shape
-
-    if 2 * bg_corner_size > min(h, w):
-        raise ValueError(
-            "bg_corner_size слишком велик."
-        )
-
-    # ============================================================
-    # 1. Выбор угловых областей
-    # ============================================================
-
-    corners = np.concatenate([
-        img_array[
-            :bg_corner_size,
-            :bg_corner_size
-        ].ravel(),
-
-        img_array[
-            :bg_corner_size,
-            -bg_corner_size:
-        ].ravel(),
-
-        img_array[
-            -bg_corner_size:,
-            :bg_corner_size
-        ].ravel(),
-
-        img_array[
-            -bg_corner_size:,
-            -bg_corner_size:
-        ].ravel()
-    ])
-
-    # ============================================================
-    # 2. Оценка фона и шума
-    # ============================================================
-
-    bg_level = np.median(corners)
-
-    mad_before = np.median(
-        np.abs(
-            corners - bg_level
-        )
+    # Современный API PyAbel.
+    #
+    # Используем только ось 1, потому что:
+    #
+    # axis = 0 -> вертикальное направление
+    # axis = 1 -> горизонтальное направление
+    #
+    # Abel-ось должна проходить вертикально через изображение.
+    center_xy = abel.tools.center.find_origin(
+        img_array,
+        method="slice",
+        axes=1,
+        slice_width=slice_width
     )
 
-    noise_std_before = (
-        1.4826 * mad_before
-    )
+    center_y, center_x = center_xy
 
-    conventional_std_before = np.std(
-        corners
-    )
-
-    # ============================================================
-    # 3. Вычитание фона
-    # ============================================================
-
-    # НЕ используем clip!
-    img_subtracted = (
-        img_array - bg_level
-    )
-
-    # ============================================================
-    # 4. Gaussian smoothing
-    # ============================================================
-
-    if sigma > 0:
-
-        img_filtered = gaussian_filter(
-            img_subtracted,
-            sigma=sigma
-        )
-
-    else:
-
-        img_filtered = img_subtracted.copy()
-
-    # ============================================================
-    # 5. Оценка остаточного шума
-    # ============================================================
-
-    corners_filtered = np.concatenate([
-        img_filtered[
-            :bg_corner_size,
-            :bg_corner_size
-        ].ravel(),
-
-        img_filtered[
-            :bg_corner_size,
-            -bg_corner_size:
-        ].ravel(),
-
-        img_filtered[
-            -bg_corner_size:,
-            :bg_corner_size
-        ].ravel(),
-
-        img_filtered[
-            -bg_corner_size:,
-            -bg_corner_size:
-        ].ravel()
-    ])
-
-    filtered_bg_median = np.median(
-        corners_filtered
-    )
-
-    mad_after = np.median(
-        np.abs(
-            corners_filtered -
-            filtered_bg_median
-        )
-    )
-
-    noise_std_after = (
-        1.4826 * mad_after
-    )
-
-    if noise_std_after > 0:
-
-        noise_reduction_factor = (
-            noise_std_before /
-            noise_std_after
-        )
-
-    else:
-
-        noise_reduction_factor = np.inf
-
-    # ============================================================
-    # 6. Signal metrics
-    # ============================================================
-
-    max_before = np.max(
-        img_array
-    )
-
-    max_after = np.max(
-        img_filtered
-    )
-
-    # ============================================================
-    # 7. Output
-    # ============================================================
-
-    info = {
-        "background": bg_level,
-
-        "noise_std_before":
-            noise_std_before,
-
-        "noise_std_after":
-            noise_std_after,
-
-        "conventional_std_before":
-            conventional_std_before,
-
-        "noise_reduction_factor":
-            noise_reduction_factor,
-
-        "max_before":
-            max_before,
-
-        "max_after":
-            max_after,
-
-        "sigma":
-            sigma
-    }
-
-    print("=== Анализ фона и шума ===")
-    print(
-        f"Медианный фон:                "
-        f"{bg_level:.3f}"
-    )
-
-    print(
-        f"СКО шума до:                  "
-        f"{noise_std_before:.3f}"
-    )
-
-    print(
-        f"Обычное СКО углов:            "
-        f"{conventional_std_before:.3f}"
-    )
-
-    print(
-        f"СКО шума после:               "
-        f"{noise_std_after:.3f}"
-    )
-
-    print(
-        f"Коэффициент подавления шума:  "
-        f"{noise_reduction_factor:.2f}"
-    )
-
-    print(
-        f"Максимум до обработки:        "
-        f"{max_before:.3f}"
-    )
-
-    print(
-        f"Максимум после обработки:     "
-        f"{max_after:.3f}"
-    )
-
-    print(
-        f"Gaussian sigma:                "
-        f"{sigma:.3f}"
-    )
-
+    print("=== Точный Abel-центр ===")
+    print(f"Y-координата: {center_y:.4f} px")
+    print(f"X-координата: {center_x:.4f} px")
     print()
-
-    # ============================================================
-    # 8. Диагностика
-    # ============================================================
 
     if debug_plot:
 
-        # Для отображения можно отдельно ограничить
-        # отрицательные значения нулём.
-        display_image = np.clip(
-            img_filtered,
-            0,
-            None
-        )
-
-        fig, axes = plt.subplots(
-            1,
-            2,
-            figsize=(13, 5)
-        )
-
-        im1 = axes[0].imshow(
-            img_subtracted,
-            cmap="viridis",
-            aspect="auto"
-        )
-
-        axes[0].set_title(
-            "После вычитания фона"
-        )
-
-        axes[0].set_xlabel("X, px")
-        axes[0].set_ylabel("Y, px")
-
-        plt.colorbar(
-            im1,
-            ax=axes[0]
-        )
-
-        im2 = axes[1].imshow(
-            display_image,
-            cmap="viridis",
-            aspect="auto"
-        )
-
-        axes[1].set_title(
-            rf"После Gaussian $\sigma={sigma}$"
-        )
-
-        axes[1].set_xlabel("X, px")
-        axes[1].set_ylabel("Y, px")
-
-        plt.colorbar(
-            im2,
-            ax=axes[1]
-        )
-
-        plt.tight_layout()
-        plt.show()
-
-        # Центральное сечение
-
-        mid_y = h // 2
-
         plt.figure(
-            figsize=(9, 4)
+            figsize=(9, 6)
         )
 
-        plt.plot(
-            img_array[mid_y],
-            label="Исходное"
+        plt.imshow(
+            img_array,
+            cmap="viridis",
+            aspect="auto"
         )
 
-        plt.plot(
-            img_filtered[mid_y],
-            label="Обработанное"
-        )
-
-        plt.axhline(
-            0,
+        plt.axvline(
+            center_x,
             linestyle="--",
-            linewidth=1
+            linewidth=2,
+            label=f"Abel axis = {center_x:.3f} px"
         )
 
         plt.xlabel("X, px")
-        plt.ylabel("Intensity")
+        plt.ylabel("Y, px")
 
         plt.title(
-            "Центральное поперечное сечение"
-        )
-
-        plt.grid(
-            True,
-            alpha=0.3
+            "Точная ось симметрии для Abel-преобразования"
         )
 
         plt.legend()
         plt.tight_layout()
         plt.show()
 
-    return img_filtered, info
+    return center_xy, center_x
+
+# ===== CELL [14] (code) =====
+def compare_abel_center_methods(
+    img_array,
+    slice_width=10,
+    debug_plot=True
+):
+    """
+    Сравнивает несколько независимых методов определения Abel-origin.
+
+    Анализируем только X-координату, поскольку продольная ось
+    уже сделана вертикальной.
+    """
+
+    import abel
+
+    img_array = np.asarray(
+        img_array,
+        dtype=np.float64
+    )
+
+    methods = [
+        "image_center",
+        "com",
+        "convolution",
+        "gaussian",
+        "slice"
+    ]
+
+    results = {}
+
+    print("=== Сравнение методов определения центра ===")
+
+    for method in methods:
+
+        try:
+
+            origin = abel.tools.center.find_origin(
+                img_array,
+                method=method,
+                axes=1,
+                slice_width=slice_width
+            )
+
+            center_y, center_x = origin
+
+            results[method] = {
+                "y": center_y,
+                "x": center_x
+            }
+
+            print(
+                f"{method:15s} -> "
+                f"X = {center_x:.5f} px"
+            )
+
+        except Exception as exc:
+
+            results[method] = {
+                "y": np.nan,
+                "x": np.nan,
+                "error": str(exc)
+            }
+
+            print(
+                f"{method:15s} -> ERROR: {exc}"
+            )
+
+    if debug_plot:
+
+        names = []
+        values = []
+
+        for method, result in results.items():
+
+            if np.isfinite(result["x"]):
+                names.append(method)
+                values.append(result["x"])
+
+        plt.figure(
+            figsize=(9, 4)
+        )
+
+        plt.bar(
+            names,
+            values
+        )
+
+        plt.axhline(
+            (img_array.shape[1] - 1) / 2,
+            linestyle="--",
+            label="Геометрический центр"
+        )
+
+        plt.xlabel("Метод")
+        plt.ylabel("X-координата, px")
+        plt.title(
+            "Сравнение методов определения Abel-центра"
+        )
+
+        plt.xticks(
+            rotation=20
+        )
+
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    return results
