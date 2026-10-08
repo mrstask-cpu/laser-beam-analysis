@@ -41,6 +41,12 @@ from .propagation import (
     gaussian_beam_width_model,
     fit_gaussian_beam_propagation,
 )
+from .metrology import (
+    radiometric_convert_intensity,
+    gaussian_psf_correct_width,
+    apply_psf_metadata,
+    build_sensitivity_uncertainty_budget,
+)
 
 __all__ = [
     "load_image",
@@ -70,4 +76,8 @@ __all__ = [
     "find_beam_waist",
     "gaussian_beam_width_model",
     "fit_gaussian_beam_propagation",
+    "radiometric_convert_intensity",
+    "gaussian_psf_correct_width",
+    "apply_psf_metadata",
+    "build_sensitivity_uncertainty_budget",
 ]
