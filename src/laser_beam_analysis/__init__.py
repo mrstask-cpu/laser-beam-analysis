@@ -21,6 +21,11 @@ from .alignment import align_laser_beam
 from .preprocessing import preprocess_background_and_noise
 from .abel_center import find_abel_center, compare_abel_center_methods
 from .symmetry import calculate_left_right_symmetry
+from .abel import (
+    inverse_abel_basex,
+    inverse_abel_hansenlaw,
+    basex_regularization_sweep,
+)
 
 __all__ = [
     "load_image",
@@ -38,4 +43,7 @@ __all__ = [
     "find_abel_center",
     "compare_abel_center_methods",
     "calculate_left_right_symmetry",
+    "inverse_abel_basex",
+    "inverse_abel_hansenlaw",
+    "basex_regularization_sweep",
 ]

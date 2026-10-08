@@ -1,38 +1,42 @@
-# ===== CELL [16] (code) =====
-def calculate_left_right_symmetry(
+# ===== CELL [18] (code) =====
+def inverse_abel_basex(
     img_array,
-    center_x,
-    radial_limit=None,
-    noise_floor=None
+    origin_x,
+    regularization=50,
+    symmetry_axis=0,
+    debug_plot=True
 ):
     """
-    Робастная оценка симметрии изображения относительно вертикальной оси.
-
-    В отличие от предыдущей версии:
-    - не учитывает области, выходящие за границы изображения;
-    - может ограничивать анализ радиусом radial_limit;
-    - может исключать значения ниже шумового порога.
+    Inverse Abel transform методом BASEX.
 
     Parameters
     ----------
     img_array : np.ndarray
-        2D обработанное изображение.
+        Предварительно обработанная 2D projection image.
 
-    center_x : float
-        Субпиксельная координата оси симметрии.
+    origin_x : float
+        Найденная координата вертикальной оси симметрии.
 
-    radial_limit : float | None
-        Максимальный радиус анализа в пикселях.
-        Если None, используется весь перекрывающийся диапазон.
+    regularization : float
+        Tikhonov regularization parameter для BASEX.
 
-    noise_floor : float | None
-        Шумовой порог. Если задан, слабые области не учитываются.
+    symmetry_axis : int
+        0 означает симметрию относительно вертикальной оси,
+        то есть левую/правую часть изображения.
+
+    debug_plot : bool
+        Показывать результат.
 
     Returns
     -------
-    metrics : dict
-        Набор метрик симметрии.
+    reconstructed : np.ndarray
+        Восстановленное 2D распределение I(r,z).
+
+    transform : abel.Transform
+        Объект PyAbel с дополнительной информацией.
     """
+
+    import abel
 
     img_array = np.asarray(
         img_array,
@@ -41,7 +45,370 @@ def calculate_left_right_symmetry(
 
     if img_array.ndim != 2:
         raise ValueError(
-            "Ожидалось 2D изображение."
+            "Для Abel inversion нужен 2D-массив."
+        )
+
+    if not np.all(np.isfinite(img_array)):
+        raise ValueError(
+            "Входное изображение содержит NaN или inf."
+        )
+
+    if regularization < 0:
+        raise ValueError(
+            "regularization не может быть отрицательным."
+        )
+
+    # PyAbel принимает origin в формате (y, x).
+    #
+    # Мы точно знаем только X-координату,
+    # поэтому Y оставляем None.
+    origin = (
+        None,
+        float(origin_x)
+    )
+
+    print("=== Abel inversion: BASEX ===")
+    print(f"Метод:               BASEX")
+    print(f"Origin X:            {origin_x:.5f} px")
+    print(f"Regularization:      {regularization}")
+    print()
+
+    transform = abel.Transform(
+        img_array,
+        direction="inverse",
+        method="basex",
+
+        # Точный найденный центр
+        origin=origin,
+
+        # Для Abel физически используем левую/правую симметрию.
+        symmetry_axis=symmetry_axis,
+
+        # Усредняем обе половины.
+        symmetrize_method="average",
+
+        # Требуется для BASEX.
+        center_options={
+            "odd_size": True,
+            "axes": 1,
+            "crop": "valid_region"
+        },
+
+        # Параметры BASEX.
+        transform_options={
+            "reg": regularization
+        },
+
+        recast_as_float64=True,
+        verbose=True
+    )
+
+    reconstructed = transform.transform
+
+    # ------------------------------------------------------------
+    # Небольшая защита от численного отрицательного хвоста
+    # ------------------------------------------------------------
+
+    negative_fraction = np.mean(
+        reconstructed < 0
+    )
+
+    min_value = np.min(
+        reconstructed
+    )
+
+    max_value = np.max(
+        reconstructed
+    )
+
+    print("=== Результат BASEX ===")
+    print(f"Размер результата:    {reconstructed.shape}")
+    print(f"Минимум:              {min_value:.6g}")
+    print(f"Максимум:             {max_value:.6g}")
+    print(
+        f"Доля отрицательных "
+        f"пикселей:             {negative_fraction:.6%}"
+    )
+    print()
+
+    if debug_plot:
+
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(14, 5)
+        )
+
+        axes[0].imshow(
+            img_array,
+            cmap="viridis",
+            aspect="auto"
+        )
+
+        axes[0].set_title(
+            "Projection"
+        )
+
+        axes[0].set_xlabel("X, px")
+        axes[0].set_ylabel("Z, px")
+
+        im = axes[1].imshow(
+            reconstructed,
+            cmap="viridis",
+            aspect="auto"
+        )
+
+        axes[1].set_title(
+            "Inverse Abel / BASEX"
+        )
+
+        axes[1].set_xlabel("r, px")
+        axes[1].set_ylabel("Z, px")
+
+        plt.colorbar(
+            im,
+            ax=axes[1]
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+    return reconstructed, transform
+
+# ===== CELL [20] (code) =====
+def basex_regularization_sweep(
+    img_array,
+    origin_x,
+    regularization_values=None,
+    debug_plot=True
+):
+    """
+    Исследует влияние регуляризации BASEX.
+
+    Для каждого значения рассчитывается:
+        - reconstructed image
+        - максимум
+        - минимум
+        - доля отрицательных значений
+        - минимальная относительная амплитуда
+        - оценка гладкости
+
+    Это исследовательский инструмент, а не финальный auto-selector.
+    """
+
+    if regularization_values is None:
+        regularization_values = [
+            0,
+            1,
+            5,
+            10,
+            25,
+            50,
+            100,
+            200
+        ]
+
+    import abel
+
+    results = {}
+
+    for reg in regularization_values:
+
+        print(
+            f"\n=== BASEX regularization = {reg} ==="
+        )
+
+        transform = abel.Transform(
+            img_array,
+            direction="inverse",
+            method="basex",
+
+            origin=(
+                None,
+                float(origin_x)
+            ),
+
+            symmetry_axis=0,
+            symmetrize_method="average",
+
+            center_options={
+                "odd_size": True,
+                "axes": 1,
+                "crop": "valid_region"
+            },
+
+            transform_options={
+                "reg": float(reg)
+            },
+
+            recast_as_float64=True,
+            verbose=False
+        )
+
+        recon = transform.transform
+
+        maximum = np.max(recon)
+        minimum = np.min(recon)
+
+        negative_fraction = np.mean(
+            recon < 0
+        )
+
+        relative_negative_amplitude = (
+            abs(minimum) / maximum
+            if maximum > 0
+            else np.nan
+        )
+
+        # --------------------------------------------------------
+        # Оценка шероховатости.
+        #
+        # Используем вторую производную только по X.
+        # Большие значения означают сильные локальные осцилляции.
+        # --------------------------------------------------------
+
+        second_derivative = np.diff(
+            recon,
+            n=2,
+            axis=1
+        )
+
+        roughness = np.sqrt(
+            np.mean(
+                second_derivative ** 2
+            )
+        )
+
+        results[reg] = {
+            "transform": transform,
+            "image": recon,
+            "max": maximum,
+            "min": minimum,
+            "negative_fraction": negative_fraction,
+            "relative_negative_amplitude":
+                relative_negative_amplitude,
+            "roughness": roughness
+        }
+
+        print(
+            f"min = {minimum:.6g}"
+        )
+
+        print(
+            f"max = {maximum:.6g}"
+        )
+
+        print(
+            f"negative fraction = "
+            f"{negative_fraction:.3%}"
+        )
+
+        print(
+            f"relative negative amplitude = "
+            f"{relative_negative_amplitude:.4%}"
+        )
+
+        print(
+            f"roughness = "
+            f"{roughness:.6g}"
+        )
+
+    if debug_plot:
+
+        regs = np.array(
+            list(results.keys()),
+            dtype=float
+        )
+
+        neg_amp = np.array([
+            results[r]["relative_negative_amplitude"]
+            for r in results
+        ])
+
+        roughness = np.array([
+            results[r]["roughness"]
+            for r in results
+        ])
+
+        fig, axes = plt.subplots(
+            1,
+            2,
+            figsize=(14, 5)
+        )
+
+        axes[0].plot(
+            regs,
+            neg_amp,
+            marker="o"
+        )
+
+        axes[0].set_xlabel(
+            "BASEX regularization"
+        )
+
+        axes[0].set_ylabel(
+            "Relative negative amplitude"
+        )
+
+        axes[0].set_title(
+            "Негативный численный хвост"
+        )
+
+        axes[0].grid(
+            True,
+            alpha=0.3
+        )
+
+        axes[1].plot(
+            regs,
+            roughness,
+            marker="o"
+        )
+
+        axes[1].set_xlabel(
+            "BASEX regularization"
+        )
+
+        axes[1].set_ylabel(
+            "Roughness"
+        )
+
+        axes[1].set_title(
+            "Гладкость реконструкции"
+        )
+
+        axes[1].grid(
+            True,
+            alpha=0.3
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+    return results
+
+# ===== CELL [22] (code) =====
+def inverse_abel_hansenlaw(
+    img_array,
+    origin_x,
+    symmetry_axis=0,
+    debug_plot=True
+):
+    """
+    Inverse Abel transform методом Hansen-Law.
+    Используется как независимая численная проверка BASEX.
+    """
+
+    import abel
+
+    img_array = np.asarray(
+        img_array,
+        dtype=np.float64
+    )
+
+    if img_array.ndim != 2:
+        raise ValueError(
+            "Для Abel inversion нужен 2D-массив."
         )
 
     if not np.all(np.isfinite(img_array)):
@@ -49,179 +416,67 @@ def calculate_left_right_symmetry(
             "Изображение содержит NaN или inf."
         )
 
-    h, w = img_array.shape
+    transform = abel.Transform(
+        img_array,
+        direction="inverse",
+        method="hansenlaw",
 
-    x = np.arange(w, dtype=np.float64)
+        origin=(
+            None,
+            float(origin_x)
+        ),
 
-    # Расстояние каждого пикселя от найденной оси.
-    radius = np.abs(x - center_x)
+        symmetry_axis=symmetry_axis,
+        symmetrize_method="average",
 
-    # Выбираем только точки, для которых зеркальная координата
-    # также находится внутри изображения.
-    mirrored_x = 2.0 * center_x - x
+        center_options={
+            "odd_size": True,
+            "axes": 1,
+            "crop": "valid_region"
+        },
 
-    valid_geometry = (
-        (mirrored_x >= 0) &
-        (mirrored_x <= w - 1)
+        recast_as_float64=True,
+        verbose=True
     )
 
-    if radial_limit is not None:
-        if radial_limit <= 0:
-            raise ValueError(
-                "radial_limit должен быть > 0."
-            )
+    reconstructed = transform.transform
 
-        valid_geometry &= (
-            radius <= radial_limit
-        )
-
-    x_valid = x[valid_geometry]
-    mirrored_x_valid = mirrored_x[valid_geometry]
-
-    # Интерполируем зеркальное изображение.
-    mirrored = np.empty_like(img_array)
-
-    for y in range(h):
-
-        mirrored[y, valid_geometry] = np.interp(
-            mirrored_x_valid,
-            x,
-            img_array[y]
-        )
-
-    original = img_array[:, valid_geometry]
-    mirrored_valid = mirrored[:, valid_geometry]
-
-    # ------------------------------------------------------------
-    # Маска по шуму
-    # ------------------------------------------------------------
-
-    if noise_floor is not None:
-        signal_mask = (
-            0.5 * (
-                np.abs(original) +
-                np.abs(mirrored_valid)
-            ) > noise_floor
-        )
-    else:
-        signal_mask = np.ones_like(
-            original,
-            dtype=bool
-        )
-
-    # ------------------------------------------------------------
-    # Разность
-    # ------------------------------------------------------------
-
-    difference = (
-        original - mirrored_valid
-    )
-
-    signal_scale = 0.5 * (
-        np.abs(original) +
-        np.abs(mirrored_valid)
-    )
-
-    # Только физически информативные точки.
-    diff_used = difference[signal_mask]
-    signal_used = signal_scale[signal_mask]
-
-    if diff_used.size == 0:
-        raise ValueError(
-            "После фильтрации не осталось информативных точек."
-        )
-
-    rms_difference = np.sqrt(
-        np.mean(
-            diff_used ** 2
-        )
-    )
-
-    rms_signal = np.sqrt(
-        np.mean(
-            signal_used ** 2
-        )
-    )
-
-    normalized_rms = (
-        rms_difference / rms_signal
-        if rms_signal > 0
-        else np.inf
-    )
-
-    # ------------------------------------------------------------
-    # Корреляция
-    # ------------------------------------------------------------
-
-    original_flat = original[signal_mask]
-    mirrored_flat = mirrored_valid[signal_mask]
-
-    if (
-        np.std(original_flat) > 0
-        and np.std(mirrored_flat) > 0
-    ):
-        correlation = np.corrcoef(
-            original_flat,
-            mirrored_flat
-        )[0, 1]
-    else:
-        correlation = np.nan
-
-    # ------------------------------------------------------------
-    # Максимальная относительная асимметрия
-    # ------------------------------------------------------------
-
-    relative_difference = (
-        np.abs(difference) /
-        np.maximum(signal_scale, np.finfo(float).eps)
-    )
-
-    relative_difference_used = (
-        relative_difference[signal_mask]
-    )
-
-    median_relative_difference = np.median(
-        relative_difference_used
-    )
-
-    percentile95_relative_difference = np.percentile(
-        relative_difference_used,
-        95
-    )
-
-    metrics = {
-        "normalized_rms": normalized_rms,
-        "correlation": correlation,
-        "median_relative_difference": median_relative_difference,
-        "p95_relative_difference": percentile95_relative_difference,
-        "number_of_points": diff_used.size
-    }
-
-    print("=== Проверка лево/право симметрии ===")
+    print("=== Результат Hansen-Law ===")
     print(
-        f"Нормированная RMS ошибка: "
-        f"{normalized_rms:.5f}"
+        f"Размер результата: "
+        f"{reconstructed.shape}"
     )
 
     print(
-        f"Корреляция:               "
-        f"{correlation:.6f}"
+        f"Диапазон: "
+        f"{reconstructed.min():.6g} ... "
+        f"{reconstructed.max():.6g}"
     )
 
-    print(
-        f"Медианная относительная "
-        f"асимметрия:               "
-        f"{median_relative_difference:.5f}"
-    )
+    if debug_plot:
 
-    print(
-        f"95-й процентиль:           "
-        f"{percentile95_relative_difference:.5f}"
-    )
+        plt.figure(
+            figsize=(8, 5)
+        )
 
-    print(
-        f"Использовано точек:        "
-        f"{diff_used.size}"
-    )
+        plt.imshow(
+            reconstructed,
+            cmap="viridis",
+            aspect="auto"
+        )
 
-    return metrics
+        plt.title(
+            "Inverse Abel / Hansen-Law"
+        )
+
+        plt.xlabel("r, px")
+        plt.ylabel("Z, px")
+
+        plt.colorbar(
+            label="Intensity"
+        )
+
+        plt.tight_layout()
+        plt.show()
+
+    return reconstructed, transform
