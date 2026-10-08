@@ -1,208 +1,177 @@
-# ===== CELL [68] (code) =====
-from dataclasses import dataclass, field
-from typing import Any
-
-
-@dataclass
-class BeamAnalysisResult:
+# ===== CELL [40] (code) =====
+def compare_basex_hansenlaw(
+    basex_results,
+    hansenlaw_results
+):
     """
-    Единый контейнер всех результатов анализа пучка.
+    Сравнивает BASEX и Hansen–Law
+    по успешным Gaussian fits.
 
-    Используется как промежуточный API между
-    научным ядром и будущим GUI.
+    Если отдельное сечение не удалось обработать,
+    оно исключается только из сравнения этого сечения.
     """
 
-    # --------------------------------------------------------
-    # Images
-    # --------------------------------------------------------
+    basex_map = {
+        item["z_index"]: item
+        for item in basex_results
+        if item.get("success", False)
+    }
 
-    raw_image: Any = None
-    aligned_image: Any = None
-    processed_image: Any = None
+    hl_map = {
+        item["z_index"]: item
+        for item in hansenlaw_results
+        if item.get("success", False)
+    }
 
-    basex_image: Any = None
-    hansenlaw_image: Any = None
-
-    # --------------------------------------------------------
-    # Metadata
-    # --------------------------------------------------------
-
-    image_shape: tuple | None = None
-
-    # --------------------------------------------------------
-    # Alignment
-    # --------------------------------------------------------
-
-    alignment: dict = field(
-        default_factory=dict
+    common_z = sorted(
+        set(basex_map) &
+        set(hl_map)
     )
 
-    # --------------------------------------------------------
-    # Preprocessing
-    # --------------------------------------------------------
+    if len(common_z) < 2:
 
-    preprocessing: dict = field(
-        default_factory=dict
+        raise RuntimeError(
+            "Недостаточно общих успешных "
+            "сечений для сравнения."
+        )
+
+    d_basex = np.array([
+        basex_map[z]["diameter_1e2"]
+        for z in common_z
+    ])
+
+    d_hl = np.array([
+        hl_map[z]["diameter_1e2"]
+        for z in common_z
+    ])
+
+    diff_percent = (
+        100.0
+        * np.abs(d_basex - d_hl)
+        / np.maximum(0.5 * (np.abs(d_basex) + np.abs(d_hl)), np.finfo(float).eps)
     )
 
-    # --------------------------------------------------------
-    # Abel center
-    # --------------------------------------------------------
-
-    center: dict = field(
-        default_factory=dict
+    mean_difference = np.mean(
+        diff_percent
     )
 
-    # --------------------------------------------------------
-    # Symmetry
-    # --------------------------------------------------------
-
-    symmetry: dict = field(
-        default_factory=dict
+    max_difference = np.max(
+        diff_percent
     )
 
-    # --------------------------------------------------------
-    # Abel methods
-    # --------------------------------------------------------
-
-    abel: dict = field(
-        default_factory=dict
+    print(
+        "=== BASEX vs Hansen–Law ==="
     )
 
-    # --------------------------------------------------------
-    # Longitudinal profiles
-    # --------------------------------------------------------
-
-    profiles_basex: list = field(
-        default_factory=list
+    print(
+        f"Сравнено сечений: "
+        f"{len(common_z)}"
     )
 
-    profiles_hansenlaw: list = field(
-        default_factory=list
+    print(
+        f"Среднее абсолютное различие: "
+        f"{mean_difference:.3f}%"
     )
 
-    # --------------------------------------------------------
-    # Validation
-    # --------------------------------------------------------
-
-    validation: dict = field(
-        default_factory=dict
+    print(
+        f"Максимальное абсолютное различие: "
+        f"{max_difference:.3f}%"
     )
 
-    # --------------------------------------------------------
-    # Waist
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # График диаметров
+    # ------------------------------------------------------------
 
-    waist: dict = field(
-        default_factory=dict
+    plt.figure(
+        figsize=(9, 5)
     )
 
-    # --------------------------------------------------------
-    # Propagation
-    # --------------------------------------------------------
-
-    propagation: dict = field(
-        default_factory=dict
+    plt.plot(
+        common_z,
+        d_basex,
+        marker="o",
+        label="BASEX"
     )
 
-    # --------------------------------------------------------
-    # Configuration
-    # --------------------------------------------------------
-
-    config: dict = field(
-        default_factory=dict
+    plt.plot(
+        common_z,
+        d_hl,
+        marker="o",
+        label="Hansen–Law"
     )
 
-    psf_profiles_basex: list = field(default_factory=list)
-    psf_profiles_hansenlaw: list = field(default_factory=list)
-    metrology: dict = field(default_factory=dict)
-    camera: dict = field(default_factory=dict)
-
-    audit: dict = field(
-        default_factory=dict
+    plt.xlabel(
+        "Продольная координата, px"
     )
 
-# ===== CELL [71] (code) =====
-def scientific_audit_report(alignment_info, symmetry_metrics, abel_method_comparison_full,
-                           propagation_basex_full, propagation_hl_full,
-                           waist_basex_full, waist_hl_full,
-                           profile_results_basex, profile_results_hl,
-                           calibration_info=None, saturation_info=None,
-                           uncertainty_budget=None, side_consistency_3d=None):
-    """Сводный QA/QC отчёт научного анализа + метрология."""
-    print("=== SCIENTIFIC QA / QC REPORT ===")
-    axis_rms=float(alignment_info.get("axis_rms_error",np.nan))
-    corr=float(symmetry_metrics.get("correlation",np.nan))
-    asym=float(symmetry_metrics.get("normalized_rms",np.nan))
-    mean_diff=float(abel_method_comparison_full.get("mean_difference_percent",np.nan)/100.0)
-    max_diff=float(abel_method_comparison_full.get("max_difference_percent",np.nan)/100.0)
-    print(f"[ALIGNMENT] RMS axis error = {axis_rms:.4g} px")
-    print(f"[SYMMETRY] correlation = {corr:.6f}; normalized RMS asymmetry = {asym:.6f}")
-    print(f"[ABEL] BASEX vs Hansen-Law: mean = {mean_diff:.3%}; max = {max_diff:.3%}")
-    print(f"[GAUSSIAN] BASEX successful fits = {sum(x.get('success',False) for x in profile_results_basex)}/{len(profile_results_basex)}")
-    print(f"[GAUSSIAN] Hansen-Law successful fits = {sum(x.get('success',False) for x in profile_results_hl)}/{len(profile_results_hl)}")
-    print(f"[PROPAGATION/BASEX] R²={propagation_basex_full['r_squared']:.4f}; ΔBIC={propagation_basex_full['delta_bic']:.4f}; z0_inside={propagation_basex_full['z0_inside_data']}")
-    print(f"[PROPAGATION/HL] R²={propagation_hl_full['r_squared']:.4f}; ΔBIC={propagation_hl_full['delta_bic']:.4f}; z0_inside={propagation_hl_full['z0_inside_data']}")
-    dz=abs(float(waist_basex_full['z_min_observed'])-float(waist_hl_full['z_min_observed']))
-    print(f"[OBSERVED WAIST] BASEX z_min={waist_basex_full['z_min_observed']:.3f} px; HL z_min={waist_hl_full['z_min_observed']:.3f} px; |Δz|={dz:.3f} px")
-    if calibration_info:
-        print(f"[CALIBRATION] enabled={calibration_info['enabled']}; scale={calibration_info['pixel_size_um']} µm/px; display={calibration_info['display_unit']}")
-    if saturation_info:
-        print(f"[SATURATION] status={saturation_info['status']}; saturated_fraction={saturation_info['saturated_fraction']:.3%}")
-    if side_consistency_3d:
-        print(f"[3D POST-SYMMETRIZATION CHECK] RMS={side_consistency_3d['normalized_rms_difference']:.3%}; corr={side_consistency_3d['correlation']:.6f}")
-    if uncertainty_budget and uncertainty_budget.get('status') == 'available':
-        print(f"[UNCERTAINTY] sensitivity envelope ×2 = ±{uncertainty_budget['absolute_sensitivity_envelope_k2']:.5g} in the reference width")
-    print("Sensitivity — это оценка устойчивости, а не автоматический выбор параметра.")
-    print("Propagation z0 и observed z_min — разные физические величины и не должны называться одинаково в отчёте.")
-    return {"axis_rms_px":axis_rms,"symmetry_correlation":corr,"symmetry_rms_asymmetry":asym,
-            "method_mean_relative_difference":mean_diff,"method_max_relative_difference":max_diff,
-            "waist_z_difference_px":dz,
-            "calibration":calibration_info,"saturation":saturation_info,
-            "uncertainty_budget":uncertainty_budget,"side_consistency_3d":side_consistency_3d}
+    plt.ylabel(
+        "D 1/e², px"
+    )
 
-scientific_audit=scientific_audit_report(
-    alignment_info, symmetry_metrics, abel_method_comparison_full,
-    propagation_basex_full, propagation_hl_full,
-    waist_basex_full, waist_hl_full,
-    profiles_basex_full, profiles_hl_full,
-    calibration_info=calibration_info,
-    saturation_info=saturation_info,
-    uncertainty_budget=uncertainty_budget,
-    side_consistency_3d=side_consistency_3d
-)
-analysis_result.audit = scientific_audit
+    plt.title(
+        "BASEX vs Hansen–Law"
+    )
 
+    plt.grid(
+        True,
+        alpha=0.3
+    )
 
-# ===== CELL [72] (code) =====
-def profiles_to_dataframe(profile_results, calibration=None):
-    """Преобразует результаты Gaussian fit в pandas.DataFrame с pixel + physical units."""
-    rows=[]
-    scale_um = resolve_pixel_scale_um(calibration) if calibration else None
-    unit = (calibration or {}).get("display_unit", "px") if calibration else "px"
-    for item in profile_results:
-        row = {
-            "z_px": item.get("z_index",np.nan), "success":item.get("success",False),
-            "amplitude":item.get("amplitude",np.nan), "peak_intensity":item.get("peak_intensity",np.nan),
-            "baseline":item.get("baseline",np.nan), "r0_px":item.get("r0",np.nan),
-            "sigma_px":item.get("sigma",np.nan), "w_px":item.get("beam_radius_w",np.nan),
-            "D_1e_px":item.get("diameter_1e",np.nan), "D_1e2_px":item.get("diameter_1e2",np.nan),
-            "FWHM_px":item.get("fwhm",np.nan), "R2_signal":item.get("r_squared_signal",np.nan),
-            "R2_full":item.get("r_squared_full",np.nan), "NRMSE_full":item.get("nrmse_full",np.nan),
-            "max_abs_residual":item.get("max_abs_residual_full",np.nan),
-            "peak_intensity_W_cm2": (radiometric_convert_intensity(item.get("peak_intensity",np.nan), ANALYSIS_CONFIG["radiometry"]) if ANALYSIS_CONFIG["radiometry"].get("enabled", False) else np.nan),
-        }
-        if scale_um is not None:
-            factor = scale_um / LENGTH_UNITS_UM[unit]
-            row[f"z_{unit}"] = row["z_px"] * factor
-            row[f"r0_{unit}"] = row["r0_px"] * factor
-            row[f"sigma_{unit}"] = row["sigma_px"] * factor
-            row[f"w_{unit}"] = row["w_px"] * factor
-            row[f"D_1e_{unit}"] = row["D_1e_px"] * factor
-            row[f"D_1e2_{unit}"] = row["D_1e2_px"] * factor
-            row[f"FWHM_{unit}"] = row["FWHM_px"] * factor
-            row[f"w_psf_corrected_{unit}"] = item.get("beam_radius_w_psf_corrected",np.nan) * factor
-            row[f"D_1e2_psf_corrected_{unit}"] = item.get("diameter_1e2_psf_corrected",np.nan) * factor
-        rows.append(row)
-    return pd.DataFrame(rows)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
 
+    # ------------------------------------------------------------
+    # График различия
+    # ------------------------------------------------------------
+
+    plt.figure(
+        figsize=(9, 5)
+    )
+
+    plt.plot(
+        common_z,
+        diff_percent,
+        marker="o"
+    )
+
+    plt.xlabel(
+        "Продольная координата, px"
+    )
+
+    plt.ylabel(
+        "Различие, %"
+    )
+
+    plt.title(
+        "Различие D 1/e²"
+    )
+
+    plt.grid(
+        True,
+        alpha=0.3
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+    return {
+        "z": np.asarray(
+            common_z
+        ),
+
+        "diameter_basex":
+            d_basex,
+
+        "diameter_hansenlaw":
+            d_hl,
+
+        "relative_difference_percent":
+            diff_percent,
+
+        "mean_difference_percent":
+            mean_difference,
+
+        "max_difference_percent":
+            max_difference
+    }

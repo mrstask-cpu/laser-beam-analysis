@@ -54,7 +54,7 @@ from .visualization import (
     interactive_3d_cross_section,
 )
 from .results import BeamAnalysisResult
-from .validation import scientific_audit_report
+from .validation import scientific_audit_report, compare_basex_hansenlaw
 from .reporting import profiles_to_dataframe
 
 __all__ = [
@@ -95,5 +95,6 @@ __all__ = [
     "interactive_3d_cross_section",
     "BeamAnalysisResult",
     "scientific_audit_report",
+    "compare_basex_hansenlaw",
     "profiles_to_dataframe",
 ]

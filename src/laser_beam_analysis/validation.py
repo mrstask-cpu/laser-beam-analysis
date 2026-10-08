@@ -89,3 +89,74 @@ def scientific_audit_report(
         "side_consistency_3d": side_consistency_3d,
     }
     return report
+
+def compare_basex_hansenlaw(
+    basex_results,
+    hansenlaw_results,
+) -> dict:
+    """Compare BASEX and Hansen–Law reconstructions via Gaussian diameters.
+
+    Only z-slices that succeeded under BOTH methods are compared. Failure
+    of an individual slice excludes it from the comparison but does not abort
+    the rest of the analysis.
+
+    Args:
+        basex_results: list of per-slice dicts from analyze_all_z_profiles
+            (BASEX branch).
+        hansenlaw_results: same, Hansen–Law branch.
+
+    Returns:
+        dict with:
+            z                              – common z indices (numpy array)
+            diameter_basex, diameter_hansenlaw – D(1/e²) arrays over common z
+            relative_difference_percent    – per-slice |Δ|/mean * 100
+            mean_difference_percent
+            max_difference_percent
+
+    Raises:
+        RuntimeError: if fewer than 2 common successful slices exist.
+    """
+    basex_map = {
+        item["z_index"]: item
+        for item in basex_results
+        if item.get("success", False)
+    }
+    hl_map = {
+        item["z_index"]: item
+        for item in hansenlaw_results
+        if item.get("success", False)
+    }
+
+    common_z = sorted(set(basex_map) & set(hl_map))
+    if len(common_z) < 2:
+        raise RuntimeError(
+            "Недостаточно общих успешных сечений для сравнения."
+        )
+
+    d_basex = np.array(
+        [basex_map[z]["diameter_1e2"] for z in common_z], dtype=float
+    )
+    d_hl = np.array(
+        [hl_map[z]["diameter_1e2"] for z in common_z], dtype=float
+    )
+
+    diff_percent = (
+        100.0
+        * np.abs(d_basex - d_hl)
+        / np.maximum(
+            0.5 * (np.abs(d_basex) + np.abs(d_hl)),
+            np.finfo(float).eps,
+        )
+    )
+
+    mean_difference = float(np.mean(diff_percent))
+    max_difference = float(np.max(diff_percent))
+
+    return {
+        "z": np.asarray(common_z),
+        "diameter_basex": d_basex,
+        "diameter_hansenlaw": d_hl,
+        "relative_difference_percent": diff_percent,
+        "mean_difference_percent": mean_difference,
+        "max_difference_percent": max_difference,
+    }
