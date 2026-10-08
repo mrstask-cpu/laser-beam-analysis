@@ -56,6 +56,7 @@ from .visualization import (
 from .results import BeamAnalysisResult
 from .validation import scientific_audit_report, compare_basex_hansenlaw
 from .reporting import profiles_to_dataframe
+from .pipeline import analyze_beam
 
 __all__ = [
     "load_image",
@@ -97,4 +98,5 @@ __all__ = [
     "scientific_audit_report",
     "compare_basex_hansenlaw",
     "profiles_to_dataframe",
+    "analyze_beam",
 ]
