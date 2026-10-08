@@ -18,6 +18,7 @@ from .camera import (
     acquisition_saturation_diagnostics,
 )
 from .alignment import align_laser_beam
+from .preprocessing import preprocess_background_and_noise
 
 __all__ = [
     "load_image",
@@ -31,4 +32,5 @@ __all__ = [
     "apply_camera_corrections",
     "acquisition_saturation_diagnostics",
     "align_laser_beam",
+    "preprocess_background_and_noise",
 ]
