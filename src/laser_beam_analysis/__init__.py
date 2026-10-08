@@ -13,6 +13,10 @@ from .calibration import (
     validate_calibration_config,
     convert_px_to_display,
 )
+from .camera import (
+    apply_camera_corrections,
+    acquisition_saturation_diagnostics,
+)
 
 __all__ = [
     "load_image",
@@ -23,4 +27,6 @@ __all__ = [
     "calibration_summary",
     "validate_calibration_config",
     "convert_px_to_display",
+    "apply_camera_corrections",
+    "acquisition_saturation_diagnostics",
 ]

@@ -34,17 +34,12 @@ def _require_finite_2d(image, name: str = "image") -> np.ndarray:
     return arr
 
 
-def load_image(source: ImageSource) -> np.ndarray:
-    """Load an image as a 2D float64 array.
+def _load_raw(source: ImageSource) -> np.ndarray:
+    """Load an image as 2D float64 without semantic validation.
 
-    Accepts:
-        - a path to a local image file,
-        - an http(s) URL,
-        - a numpy array (returned as a copy).
-
-    RGB/RGBA inputs are converted to grayscale using Rec.709 luma
-    coefficients (0.2126 R + 0.7152 G + 0.0722 B). Original dynamic
-    range is preserved: no normalization is applied.
+    Unlike load_image(), this does NOT enforce a non-zero dynamic range.
+    Used for calibration frames (dark / flat) which are legitimately
+    allowed to be uniform.
     """
     try:
         if isinstance(source, np.ndarray):
@@ -90,6 +85,21 @@ def load_image(source: ImageSource) -> np.ndarray:
         raise ValueError("Изображение пустое.")
     if not np.all(np.isfinite(image)):
         raise ValueError("Изображение содержит NaN или бесконечные значения.")
+    return image
+
+
+def load_image(source: ImageSource) -> np.ndarray:
+    """Load a beam image as 2D float64.
+
+    Accepts a path, an http(s) URL, or a numpy array. RGB/RGBA inputs are
+    converted to grayscale using Rec.709 luma coefficients. Original
+    dynamic range is preserved (no normalization).
+
+    Unlike _load_raw(), this enforces that the image has a non-zero
+    dynamic range, which is a meaningful requirement for beam images but
+    not for calibration frames.
+    """
+    image = _load_raw(source)
     if not np.ptp(image) > 0:
         raise ValueError(
             "Изображение не имеет динамического диапазона: все пиксели одинаковы."
