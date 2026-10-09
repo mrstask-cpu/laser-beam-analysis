@@ -198,7 +198,7 @@ Output goes to `docs/images/`.
 
 ## Status
 
-v1.0 — packaging of a research prototype into a reproducible engineering
+v0.1.0 — packaging of a research prototype into a reproducible engineering
 project. All stages of the pipeline are covered by unit tests; the
 `analyze_beam()` entry point is covered by an end-to-end test on synthetic
 input.
